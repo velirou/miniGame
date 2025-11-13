@@ -1,6 +1,64 @@
-build/
+# .gitignore for a small C / raylib project
+# Keeps build artifacts, editor files, and OS cruft out of the repo
+
+# Object files and static libs
 *.o
+*.obj
+*.lo
+*.a
+*.lib
+
+# Shared libraries and binaries
+*.so
+*.dylib
+*.dll
 *.exe
-player_spritesheet.png
-background.png
-tile.png
+*.out
+*.elf
+
+# Build directories
+/build/
+/bin/
+/dist/
+/Debug/
+/Release/
+
+# CMake
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+# IDEs and editors
+.vscode/
+.idea/
+*.code-workspace
+
+# Temporary and backup files
+*~
+*.swp
+*.swo
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Logs and runtime files
+*.log
+.cache/
+
+# Environment and secrets
+.env
+.env.local
+
+# Node modules (if you happen to use a front-end toolchain)
+node_modules/
+
+# Optional: ignore generated art/assets if you store them elsewhere
+# Uncomment if you don't want to track large images:
+# *.png
+# *.jpg
+# *.jpeg
+# *.gif
+
+# Keep this file tracked
