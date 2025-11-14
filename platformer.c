@@ -49,7 +49,7 @@ int main(void)
     const float moveSpeed = 200;
 
     // Animation info
-    int frameWidth = playerTex.width / 4;   // assuming 4 frames
+    int frameWidth = playerTex.width / 2;   // assuming 2 frames
     int frameHeight = playerTex.height;
 
     // Camera setup
