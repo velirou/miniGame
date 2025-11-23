@@ -1,5 +1,4 @@
-# .gitignore for a small C / raylib project
-# Keeps build artifacts, editor files, and OS cruft out of the repo
+# --- Raylib C Project .gitignore ---
 
 # Object files and static libs
 *.o
@@ -8,13 +7,19 @@
 *.a
 *.lib
 
-# Shared libraries and binaries
+# Shared libraries
 *.so
 *.dylib
 *.dll
+
+# Platform executables
 *.exe
 *.out
 *.elf
+
+# Raylib-generated build files (depending on OS)
+*.pdb
+*.exp
 
 # Build directories
 /build/
@@ -22,6 +27,7 @@
 /dist/
 /Debug/
 /Release/
+/out/
 
 # CMake
 CMakeFiles/
@@ -51,14 +57,11 @@ Thumbs.db
 .env
 .env.local
 
-# Node modules (if you happen to use a front-end toolchain)
+# Node modules (optional for tooling)
 node_modules/
 
-# Optional: ignore generated art/assets if you store them elsewhere
-# Uncomment if you don't want to track large images:
+# Optional: ignore generated assets (uncomment if needed)
 # *.png
 # *.jpg
 # *.jpeg
 # *.gif
-
-# Keep this file tracked
