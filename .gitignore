@@ -1,74 +1,40 @@
-# --- Raylib C Project .gitignore ---
+# --- Raylib C Project ---
 
-# Object files and static libs
+# Compiled binary (your game)
+platformer
+
+# Object files
 *.o
 *.obj
-*.lo
+
+# Static/Shared libraries
 *.a
 *.lib
-
-# Shared libraries
 *.so
 *.dylib
 *.dll
 
-# Platform executables
+# Other executables
 *.exe
 *.out
 *.elf
 
-# Raylib-generated build files (depending on OS)
-*.pdb
-*.exp
-
-# Build directories
+# Build folders
 /build/
 /bin/
 /dist/
 /Debug/
 /Release/
-/out/
 
-# CMake
-CMakeFiles/
-CMakeCache.txt
-cmake_install.cmake
-Makefile
-
-# IDEs and editors
+# IDE/editor files
 .vscode/
 .idea/
-*.code-workspace
 
-# Temporary and backup files
+# Temp files
 *~
 *.swp
 *.swo
 
-# OS generated files
+# OS files
 .DS_Store
 Thumbs.db
-
-# Logs and runtime files
-*.log
-.cache/
-
-# Environment and secrets
-.env
-.env.local
-
-# Node modules (optional for tooling)
-node_modules/
-
-# Optional: ignore generated assets (uncomment if needed)
-# *.png
-# *.jpg
-# *.jpeg
-# *.gif
-
-# my custom ignores
-background.png
-platformer
-platformer.c
-player_spritesheet.png
-tileset.png
