@@ -65,4 +65,10 @@ node_modules/
 # *.jpg
 # *.jpeg
 # *.gif
+
+# my custom ignores
+background.png
 platformer
+platformer.c
+player_spritesheet.png
+tileset.png
