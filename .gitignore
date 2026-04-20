@@ -30,6 +30,9 @@ platformer
 .vscode/
 .idea/
 
+# Local build logs
+build.log
+
 # Temp files
 *~
 *.swp

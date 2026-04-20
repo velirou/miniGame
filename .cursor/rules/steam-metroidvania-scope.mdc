@@ -1,0 +1,24 @@
+---
+description: Enforce miniGame Steam Metroidvania scope and doc-first workflow
+alwaysApply: true
+---
+
+# miniGame — scope and workflow
+
+This project targets a **small Steam Metroidvania RPG** (Hollow Knight–inspired **feel**, not scope). Before implementing gameplay or systems:
+
+1. Read **`AGENTS.md`** at the repo root.
+2. Align work with **`docs/GAME_VISION_AND_SCOPE.md`** and the active phase in **`docs/MILESTONES.md`**.
+3. Use prompts from **`docs/MASTER_PROMPTS.md`** when the user asks for phased work.
+
+## Do not
+
+- Add new biomes, large crafting systems, huge enemy rosters, or multiple parallel RPG progression systems **unless the user explicitly requests that in the current message**.
+- Skip **Phase 1** exit criteria (movement, collision, camera, basic combat trust) to build content-heavy maps or story.
+- Perform broad refactors unrelated to the stated task.
+
+## Do
+
+- State which **milestone phase (0–6)** a change serves and how to **manually test** it.
+- Keep tunables (gravity, speeds, i-frames) in one discoverable place per **`docs/TECH_STACK_AND_CONVENTIONS.md`**.
+- Prefer **one vertical slice** and **minimal diffs** over speculative architecture.
