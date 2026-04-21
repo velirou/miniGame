@@ -45,9 +45,14 @@ android {
 tasks.register("syncGameAssets", Sync) {
     // Mirror desktop assets so mobile always ships the same content set.
     from("../../assets") {
-        include "*.png"
-        include "*.wav"
-        include "*.ogg"
+        include "**/*"
+        exclude "**/.gitkeep"
+    }
+    // Include root-level BGM source until audio assets are fully moved under assets/audio.
+    from("../../") {
+        include "audio-I-have-a-indie-medieval-fantasy-rpg-game-I-want-ma.mp3"
+        into "audio"
+        rename { "bgm-main.mp3" }
     }
     into("src/main/assets")
 }

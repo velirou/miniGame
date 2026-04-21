@@ -102,6 +102,7 @@
 #define TOUCH_BTN_ALPHA      100
 #define TOUCH_BTN_TEXT_ALPHA 220
 #define MOBILE_CAM_ZOOM       1.45f
+#define JUMP_MIN_WIDTH_RATIO   0.72f
 
 #define MAX_FX_PARTICLES      96
 #define MAX_JUMP_SEQ_FRAMES   24
@@ -1431,7 +1432,23 @@ static bool load_sound_from_candidates(Sound *out, const char *const *names, int
     char path[256];
     for (int i = 0; i < count; i++) {
         const char *name = names[i];
-        int n = snprintf(path, sizeof path, "assets/audio/%s", name);
+        int n = 0;
+#if MOBILE_BUILD
+        n = snprintf(path, sizeof path, "audio/%s", name);
+        if (n > 0 && n < (int)sizeof path) {
+            Sound s = LoadSound(path);
+            if (s.frameCount > 0) {
+                *out = s;
+                return true;
+            }
+        }
+        Sound s0 = LoadSound(name);
+        if (s0.frameCount > 0) {
+            *out = s0;
+            return true;
+        }
+#endif
+        n = snprintf(path, sizeof path, "assets/audio/%s", name);
         if (n > 0 && n < (int)sizeof path && FileExists(path)) {
             *out = LoadSound(path);
             return true;
@@ -1454,7 +1471,25 @@ static bool load_music_from_candidates(Music *out, const char *const *names, int
     char path[256];
     for (int i = 0; i < count; i++) {
         const char *name = names[i];
-        int n = snprintf(path, sizeof path, "assets/audio/%s", name);
+        int n = 0;
+#if MOBILE_BUILD
+        n = snprintf(path, sizeof path, "audio/%s", name);
+        if (n > 0 && n < (int)sizeof path) {
+            Music m = LoadMusicStream(path);
+            if (m.frameCount > 0 || m.ctxData != NULL) {
+                *out = m;
+                return true;
+            }
+            UnloadMusicStream(m);
+        }
+        Music m0 = LoadMusicStream(name);
+        if (m0.frameCount > 0 || m0.ctxData != NULL) {
+            *out = m0;
+            return true;
+        }
+        UnloadMusicStream(m0);
+#endif
+        n = snprintf(path, sizeof path, "assets/audio/%s", name);
         if (n > 0 && n < (int)sizeof path && FileExists(path)) {
             *out = LoadMusicStream(path);
             return true;
@@ -3116,6 +3151,9 @@ int main(void)
             }
 
             if (use_player_sprite) {
+                float base_player_dest_h = PLAYER_DRAW_H;
+                if (sprite_frame_w > 0)
+                    base_player_dest_h = sprite_frame_h * (PLAYER_DRAW_W / (float)sprite_frame_w);
                 if (player.state == PLAYER_ATTACKING && use_attack_sprite && attack_frame_count > 0) {
                     float prog = (ATTACK_DURATION - player.state_timer) / ATTACK_DURATION;
                     if (prog < 0.0f) prog = 0.0f;
@@ -3131,17 +3169,19 @@ int main(void)
                         fr.x = frame_left + fw;
                         fr.width = -fw;
                     }
-                    float dest_w = PLAYER_DRAW_W;
-                    float dest_h = fh * (PLAYER_DRAW_W / fw);
-                    float draw_x = player.position.x + (float)player.facing * 6.0f;
+                    float keep_height_scale = base_player_dest_h / fh;
+                    float dest_h = base_player_dest_h;
+                    float dest_w = fw * keep_height_scale;
+                    if (dest_w > PLAYER_DRAW_W) {
+                        float shrink = PLAYER_DRAW_W / dest_w;
+                        dest_w *= shrink;
+                        dest_h *= shrink;
+                    }
+                    float draw_x = player.position.x + (PLAYER_DRAW_W - dest_w) * 0.5f + (float)player.facing * 6.0f;
                     float draw_y = player.position.y + PLAYER_DRAW_H - HITBOX_PAD - dest_h + PLAYER_SPRITE_Y_OFF;
                     Rectangle dest = { draw_x, draw_y, dest_w, dest_h };
                     DrawTexturePro(attack_tex, fr, dest, (Vector2){ 0.0f, 0.0f }, 0.0f, WHITE);
-                } else if (!player.on_ground && ((use_jump_sequence && jump_seq_count > 0) || (use_jump_sprite && jump_frame_count > 0))) {
-                    float ground_dest_h = PLAYER_DRAW_H;
-                    if (sprite_frame_w > 0)
-                        ground_dest_h = sprite_frame_h * (PLAYER_DRAW_W / (float)sprite_frame_w);
-                    float ground_dest_w = PLAYER_DRAW_W;
+                } else if (!MOBILE_BUILD && !player.on_ground && ((use_jump_sequence && jump_seq_count > 0) || (use_jump_sprite && jump_frame_count > 0))) {
                     if (use_jump_sequence && jump_seq_count > 0) {
                         int seq_idx = 0;
                         if (player.velocity.y < -120.0f) seq_idx = (jump_seq_count > 4) ? 2 : 0;
@@ -3157,10 +3197,13 @@ int main(void)
                             fr.x += fw;
                             fr.width = -fw;
                         }
-                        float keep_height_scale = ground_dest_h / fh;
-                        float dest_h = ground_dest_h;
+                        float keep_height_scale = base_player_dest_h / fh;
+                        float dest_h = base_player_dest_h;
                         float dest_w = fw * keep_height_scale;
-                        float draw_x = player.position.x + (ground_dest_w - dest_w) * 0.5f;
+                        float min_jump_w = PLAYER_DRAW_W * JUMP_MIN_WIDTH_RATIO;
+                        if (dest_w < min_jump_w) dest_w = min_jump_w;
+                        if (dest_w > PLAYER_DRAW_W) dest_w = PLAYER_DRAW_W;
+                        float draw_x = player.position.x + (PLAYER_DRAW_W - dest_w) * 0.5f;
                         float draw_y = player.position.y + PLAYER_DRAW_H - HITBOX_PAD - dest_h + PLAYER_SPRITE_Y_OFF;
                         Rectangle dest = { draw_x, draw_y, dest_w, dest_h };
                         DrawTexturePro(jt, fr, dest, (Vector2){ 0.0f, 0.0f }, 0.0f, WHITE);
@@ -3176,10 +3219,13 @@ int main(void)
                             fr.x = frame_left + fw;
                             fr.width = -fw;
                         }
-                        float keep_height_scale = ground_dest_h / fh;
-                        float dest_h = ground_dest_h;
+                        float keep_height_scale = base_player_dest_h / fh;
+                        float dest_h = base_player_dest_h;
                         float dest_w = fw * keep_height_scale;
-                        float draw_x = player.position.x + (ground_dest_w - dest_w) * 0.5f;
+                        float min_jump_w = PLAYER_DRAW_W * JUMP_MIN_WIDTH_RATIO;
+                        if (dest_w < min_jump_w) dest_w = min_jump_w;
+                        if (dest_w > PLAYER_DRAW_W) dest_w = PLAYER_DRAW_W;
+                        float draw_x = player.position.x + (PLAYER_DRAW_W - dest_w) * 0.5f;
                         float draw_y = player.position.y + PLAYER_DRAW_H - HITBOX_PAD - dest_h + PLAYER_SPRITE_Y_OFF;
                         Rectangle dest = { draw_x, draw_y, dest_w, dest_h };
                         DrawTexturePro(jump_tex, fr, dest, (Vector2){ 0.0f, 0.0f }, 0.0f, WHITE);
