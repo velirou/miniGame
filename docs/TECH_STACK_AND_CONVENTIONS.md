@@ -48,6 +48,7 @@ When you change feel-critical numbers, add one line:
 | Date | Constant | Old | New | Reason |
 |------|----------|-----|-----|--------|
 | 2026-04-19 | Phase 1 batch | — | `platformer.c` tunables block | Initial movement / combat tuning |
+| 2026-04-21 | Tank/Dasher aggro speeds | see `platformer.c` | lower chase + strike | Common enemies closed too fast on aggro; Cantor unchanged |
 | YYYY-MM-DD | e.g. `JUMP_VELOCITY` | | | e.g. follow-up playtest |
 
 (Optional: small table at bottom of this file.)

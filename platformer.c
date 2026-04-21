@@ -1,7 +1,8 @@
 /*
- * Phase 2 — Metroidvania spine (rooms, fade transitions, bench, gates, map, shortcut).
+ * Phase 3 kickoff — archetype pass (tank/fast/ranged) + Cantor mini-boss gate.
  * Tunables: "Gameplay tuning" below.
- * Manual test: explore Entrance→Hub; take key; bench (E); East (key) — cling + dummy → drift;
+ * Manual test: explore Entrance→Hub; test enemy contact + attack windows in each room;
+ *   take key; bench (E); East (key) — cling + Cantor → drift;
  *   Hub south (cling) → Shaft — spikes need drift; map pickup; shortcut (E) when open;
  *   pit / spikes respawn at last bench. M map if owned. R full reset. F1 hitboxes.
  *
@@ -41,11 +42,24 @@
 #define ATTACK_COOLDOWN    0.10f
 #define ATTACK_RANGE        56.0f
 #define ATTACK_HEIGHT       40.0f
+#define HERO_ATTACK_FRAMES    16
 
 #define HITSTOP_DURATION   0.09f
 #define ENEMY_MAX_HP           4
 #define ENEMY_HURT_IFRAMES     0.35f
 #define ENEMY_KNOCKBACK       180.0f
+#define ENEMY_TOUCH_IFRAMES     0.50f
+#define ENEMY_TOUCH_KNOCK      230.0f
+#define ENEMY_SHOT_SPEED       320.0f
+#define ENEMY_SHOT_RADIUS       10.0f
+#define ENEMY_DASH_STRIKE_SPEED 285.0f
+#define ENEMY_TANK_STRIKE_SPEED 195.0f
+#define ENEMY_STRIKE_RADIUS      90.0f
+#define ENEMY_AGGRO_RADIUS      420.0f
+#define ENEMY_AGGRO_LOSE_RADIUS 560.0f
+#define ENEMY_AGGRO_LOSE_TIME     1.4f
+#define ENEMY_MELEE_W             58.0f
+#define ENEMY_MELEE_H             44.0f
 
 #define FADE_SPEED            4.0f
 #define TRANSITION_COOLDOWN   0.18f
@@ -80,6 +94,8 @@
 #define ASSET_HERO_A     "sprite-hero.png"
 #define ASSET_HERO_B     "medieval-rpg-main-character-d002.png"
 #define ASSET_HERO_C     "player_spritesheet.png"
+/* Horizontal strip, 16 equal cells (packed from sprite-max-px-16-frames). */
+#define ASSET_HERO_ATTACK "sprite-hero-attack.png"
 #define ASSET_TILE_A     "tile-ground.png"
 #define ASSET_TILE_B     "tile.png"
 #define ASSET_ENEMY      "sprite-simple-enemy.png"
@@ -120,6 +136,14 @@ typedef struct PickupState {
     Vector2 pos;
     bool collected;
 } PickupState;
+
+typedef enum EnemyType {
+    ENEMY_NONE = 0,
+    ENEMY_TANK,
+    ENEMY_DASHER,
+    ENEMY_CASTER,
+    ENEMY_CANTOR
+} EnemyType;
 
 /* World / pit: respawn if you fall past playable space (open bottom in pit) */
 static Vector2 g_spawn = { 0 };
@@ -225,9 +249,23 @@ typedef struct Player {
 
 typedef struct DummyEnemy {
     Rectangle bounds;
+    EnemyType type;
     int hp;
     float hurt_iframes;
     float hurt_flash;
+    float ai_timer;
+    float vel_y;
+    float strike_timer;
+    float strike_cd;
+    float aggro_lost_timer;
+    int dir;
+    float home_x;
+    float patrol_half;
+    bool enrage_phase;
+    bool shot_live;
+    Vector2 shot_pos;
+    Vector2 shot_vel;
+    bool aggro;
     bool dead;
 } DummyEnemy;
 
@@ -262,6 +300,10 @@ typedef struct TouchUi {
 } TouchUi;
 
 static Rectangle east_enemy_spawn(void);
+static Rectangle entrance_enemy_spawn(void);
+static Rectangle hub_enemy_spawn(void);
+static Rectangle shaft_enemy_spawn(void);
+static const char *enemy_name(EnemyType type);
 static void sync_dummy_for_room(DummyEnemy *e);
 static Rectangle player_collider(Vector2 pos);
 static void push_toast(const char *msg, float sec);
@@ -1071,21 +1113,99 @@ static Rectangle east_enemy_spawn(void)
     return (Rectangle){ ex, ey, ENEMY_DRAW_W, ENEMY_DRAW_H };
 }
 
-static void sync_dummy_for_room(DummyEnemy *e)
+static Rectangle entrance_enemy_spawn(void)
 {
-    if (g_room != ROOM_EAST) return;
-    if (g_dummy_defeated) {
-        e->dead = true;
-        return;
-    }
-    e->dead = false;
-    e->hp = ENEMY_MAX_HP;
-    e->hurt_iframes = 0.0f;
-    e->hurt_flash = 0.0f;
-    e->bounds = east_enemy_spawn();
+    const int fl = HUB_FLOOR_ROW;
+    float ex = 20.0f * (float)TILE_SIZE;
+    float ey = (float)(fl * TILE_SIZE) - ENEMY_DRAW_H;
+    return (Rectangle){ ex, ey, ENEMY_DRAW_W, ENEMY_DRAW_H };
 }
 
-/* Full run reset (R) — progression, rooms, dummy */
+static Rectangle hub_enemy_spawn(void)
+{
+    const int fl = HUB_FLOOR_ROW;
+    float ex = 34.0f * (float)TILE_SIZE;
+    float ey = (float)(fl * TILE_SIZE) - ENEMY_DRAW_H;
+    return (Rectangle){ ex, ey, ENEMY_DRAW_W, ENEMY_DRAW_H };
+}
+
+static Rectangle shaft_enemy_spawn(void)
+{
+    const int row = SHAFT_TOP_ROW + 8;
+    float ex = (float)(MAP_WIDTH / 2 * TILE_SIZE) - ENEMY_DRAW_W * 0.5f;
+    float ey = (float)(row * TILE_SIZE) - ENEMY_DRAW_H;
+    return (Rectangle){ ex, ey, ENEMY_DRAW_W, ENEMY_DRAW_H };
+}
+
+static const char *enemy_name(EnemyType type)
+{
+    switch (type) {
+        case ENEMY_TANK: return "Choir Warden";
+        case ENEMY_DASHER: return "Needle Echo";
+        case ENEMY_CASTER: return "Canticle Slinger";
+        case ENEMY_CANTOR: return "Cantor";
+        default: return "Echo";
+    }
+}
+
+static void sync_dummy_for_room(DummyEnemy *e)
+{
+    e->hurt_iframes = 0.0f;
+    e->hurt_flash = 0.0f;
+    e->ai_timer = 0.0f;
+    e->vel_y = 0.0f;
+    e->strike_timer = 0.0f;
+    e->strike_cd = 0.0f;
+    e->aggro_lost_timer = 0.0f;
+    e->dir = -1;
+    e->enrage_phase = false;
+    e->shot_live = false;
+    e->shot_pos = (Vector2){ 0.0f, 0.0f };
+    e->shot_vel = (Vector2){ 0.0f, 0.0f };
+    e->aggro = false;
+
+    switch (g_room) {
+        case ROOM_ENTRANCE:
+            e->type = ENEMY_DASHER;
+            e->hp = 3;
+            e->bounds = entrance_enemy_spawn();
+            e->patrol_half = 4.0f * (float)TILE_SIZE;
+            e->dead = false;
+            break;
+        case ROOM_HUB:
+            e->type = ENEMY_TANK;
+            e->hp = 5;
+            e->bounds = hub_enemy_spawn();
+            e->patrol_half = 4.0f * (float)TILE_SIZE;
+            e->dead = false;
+            break;
+        case ROOM_SHAFT:
+            e->type = ENEMY_CASTER;
+            e->hp = 3;
+            e->bounds = shaft_enemy_spawn();
+            e->patrol_half = 0.0f;
+            e->dead = false;
+            break;
+        case ROOM_EAST:
+            e->type = ENEMY_CANTOR;
+            e->hp = ENEMY_MAX_HP;
+            e->bounds = east_enemy_spawn();
+            e->patrol_half = 8.0f * (float)TILE_SIZE;
+            e->aggro = true;
+            e->dead = g_dummy_defeated;
+            break;
+        default:
+            e->type = ENEMY_NONE;
+            e->hp = 0;
+            e->bounds = (Rectangle){ 0 };
+            e->patrol_half = 0.0f;
+            e->dead = true;
+            break;
+    }
+    e->home_x = e->bounds.x;
+}
+
+/* Full run reset (R) — progression, rooms, enemies */
 static void reset_run(Player *p, DummyEnemy *e, float *hitstop)
 {
     g_has_cathedral_key = false;
@@ -1123,11 +1243,7 @@ static void reset_run(Player *p, DummyEnemy *e, float *hitstop)
     p->anim_frame = 0;
     p->anim_time = 0.0f;
 
-    e->bounds = east_enemy_spawn();
-    e->hp = ENEMY_MAX_HP;
-    e->hurt_iframes = 0.0f;
-    e->hurt_flash = 0.0f;
-    e->dead = true;
+    sync_dummy_for_room(e);
     *hitstop = 0.0f;
     latch_doors_from_player(p);
 }
@@ -1146,30 +1262,214 @@ static bool attack_is_active(const Player *p)
     return t >= ATTACK_ACTIVE_START && t <= ATTACK_ACTIVE_END;
 }
 
-static void update_enemy(DummyEnemy *e, const Rectangle *attack, bool attack_active, float *hitstop,
-                         Vector2 player_pos, float dt)
+static void hurt_player_from_enemy(Player *p, const DummyEnemy *e, const char *reason)
+{
+    if (p->iframes_timer > 0.0f) return;
+    p->iframes_timer = ENEMY_TOUCH_IFRAMES;
+
+    float pcx = p->position.x + PLAYER_DRAW_W * 0.5f;
+    float ecx = e->bounds.x + e->bounds.width * 0.5f;
+    float dir = (pcx >= ecx) ? 1.0f : -1.0f;
+    p->velocity.x = dir * ENEMY_TOUCH_KNOCK;
+    p->velocity.y = -300.0f;
+    push_toast(reason, 1.2f);
+}
+
+static void update_enemy(DummyEnemy *e, Player *p, const Rectangle *attack, bool attack_active, float *hitstop, float dt)
 {
     if (e->dead) return;
     if (e->hurt_iframes > 0.0f) e->hurt_iframes -= dt;
     if (e->hurt_flash > 0.0f) e->hurt_flash -= dt;
+
+    if (e->strike_timer > 0.0f) e->strike_timer -= dt;
+    if (e->strike_cd > 0.0f) e->strike_cd -= dt;
+
+    Rectangle player_body = player_collider(p->position);
+    float speed = 0.0f;
+    bool body_attack_active = false;
+    bool melee_attack_active = false;
+    Rectangle melee_hit = { 0 };
+    float player_center_x = p->position.x + PLAYER_DRAW_W * 0.5f;
+    float player_center_y = p->position.y + PLAYER_DRAW_H * 0.5f;
+    float enemy_center_x = e->bounds.x + e->bounds.width * 0.5f;
+    float enemy_center_y = e->bounds.y + e->bounds.height * 0.5f;
+    float dist_x = fabsf(player_center_x - enemy_center_x);
+    float dist_y = fabsf(player_center_y - enemy_center_y);
+    float dist = sqrtf(dist_x * dist_x + dist_y * dist_y);
+
+    if (e->type != ENEMY_CANTOR) {
+        if (!e->aggro && dist <= ENEMY_AGGRO_RADIUS)
+            e->aggro = true;
+
+        if (e->aggro && dist > ENEMY_AGGRO_LOSE_RADIUS) {
+            e->aggro_lost_timer += dt;
+            if (e->aggro_lost_timer >= ENEMY_AGGRO_LOSE_TIME) {
+                e->aggro = false;
+                e->aggro_lost_timer = 0.0f;
+            }
+        } else {
+            e->aggro_lost_timer = 0.0f;
+        }
+    }
+
+    switch (e->type) {
+        case ENEMY_TANK:
+            if (e->aggro) {
+                e->dir = (player_center_x >= enemy_center_x) ? 1 : -1;
+                speed = 44.0f;
+                if (e->strike_cd <= 0.0f && dist_x < ENEMY_STRIKE_RADIUS && dist_y < PLAYER_DRAW_H) {
+                    e->strike_cd = 1.35f;
+                    e->strike_timer = 0.34f; /* brief wind-up then armored shove */
+                }
+                if (e->strike_timer > 0.0f) {
+                    if (e->strike_timer < 0.18f) {
+                        speed = ENEMY_TANK_STRIKE_SPEED;
+                        body_attack_active = true;
+                    } else {
+                        speed = 20.0f;
+                    }
+                }
+            } else {
+                speed = 32.0f;
+            }
+            break;
+        case ENEMY_DASHER: {
+            if (e->aggro) {
+                float d = dist_x;
+                speed = (d < 8.0f * (float)TILE_SIZE) ? 155.0f : 72.0f;
+                e->dir = (player_center_x >= enemy_center_x) ? 1 : -1;
+                if (e->strike_cd <= 0.0f && d < 6.0f * (float)TILE_SIZE && dist_y < PLAYER_DRAW_H) {
+                    e->strike_cd = 0.95f;
+                    e->strike_timer = 0.22f;
+                }
+                if (e->strike_timer > 0.0f) {
+                    speed = ENEMY_DASH_STRIKE_SPEED;
+                    body_attack_active = true;
+                }
+            } else {
+                speed = 34.0f;
+            }
+            break;
+        }
+        case ENEMY_CASTER:
+            speed = 0.0f;
+            if (e->aggro) {
+                e->dir = (player_center_x >= enemy_center_x) ? 1 : -1;
+                e->ai_timer -= dt;
+                if (e->ai_timer <= 0.0f && !e->shot_live) {
+                    e->ai_timer = 1.25f;
+                    e->shot_live = true;
+                    e->shot_pos = (Vector2){ enemy_center_x, e->bounds.y + e->bounds.height * 0.45f };
+                    e->shot_vel = (Vector2){ (float)e->dir * ENEMY_SHOT_SPEED, 0.0f };
+                }
+            }
+            break;
+        case ENEMY_CANTOR:
+            e->dir = (player_center_x >= enemy_center_x) ? 1 : -1;
+            speed = e->enrage_phase ? 170.0f : 95.0f;
+            body_attack_active = true;
+            e->ai_timer -= dt;
+            if (e->ai_timer <= 0.0f && !e->shot_live) {
+                float phase_mult = e->enrage_phase ? 0.65f : 1.0f;
+                Vector2 to_player = {
+                    player_center_x - enemy_center_x,
+                    (p->position.y + PLAYER_DRAW_H * 0.45f) - (e->bounds.y + e->bounds.height * 0.45f)
+                };
+                float len = sqrtf(to_player.x * to_player.x + to_player.y * to_player.y);
+                Vector2 dirn = (len > 0.001f) ? (Vector2){ to_player.x / len, to_player.y / len } : (Vector2){ (float)e->dir, 0.0f };
+                e->ai_timer = 1.05f * phase_mult;
+                e->shot_live = true;
+                e->shot_pos = (Vector2){ enemy_center_x, e->bounds.y + e->bounds.height * 0.45f };
+                e->shot_vel = (Vector2){ dirn.x * ENEMY_SHOT_SPEED, dirn.y * ENEMY_SHOT_SPEED };
+            }
+            break;
+        default:
+            speed = 0.0f;
+            break;
+    }
+
+    if (!e->aggro && e->patrol_half > 0.0f) {
+        float min_x = e->home_x - e->patrol_half;
+        float max_x = e->home_x + e->patrol_half;
+        if (e->bounds.x <= min_x + 2.0f) e->dir = 1;
+        if (e->bounds.x >= max_x - 2.0f) e->dir = -1;
+    }
+
+    float enemy_vel_x = (float)e->dir * speed;
+    float prev_enemy_x = e->bounds.x;
+    e->bounds.x += enemy_vel_x * dt;
+    resolve_axis_x(&e->bounds, prev_enemy_x, &enemy_vel_x);
+    if (fabsf(enemy_vel_x) < 1.0f && speed > 0.0f)
+        e->dir = -e->dir;
+
+    e->vel_y += GRAVITY * dt;
+    if (e->vel_y > MAX_FALL_SPEED) e->vel_y = MAX_FALL_SPEED;
+    {
+        float prev_enemy_y = e->bounds.y;
+        bool enemy_on_ground = false;
+        e->bounds.y += e->vel_y * dt;
+        resolve_axis_y(&e->bounds, prev_enemy_y, &e->vel_y, &enemy_on_ground);
+    }
+
+    if (!e->aggro && e->patrol_half > 0.0f) {
+        float min_x = e->home_x - e->patrol_half;
+        float max_x = e->home_x + e->patrol_half;
+        if (e->bounds.x < min_x) {
+            e->bounds.x = min_x;
+            e->dir = 1;
+        } else if (e->bounds.x > max_x) {
+            e->bounds.x = max_x;
+            e->dir = -1;
+        }
+    }
+
+    if (body_attack_active) {
+        float mw = ENEMY_MELEE_W;
+        float mh = ENEMY_MELEE_H;
+        float mx = (e->dir >= 0) ? (e->bounds.x + e->bounds.width - 6.0f) : (e->bounds.x - mw + 6.0f);
+        float my = e->bounds.y + e->bounds.height * 0.5f - mh * 0.5f;
+        melee_hit = (Rectangle){ mx, my, mw, mh };
+        melee_attack_active = true;
+    }
+
+    if (e->shot_live) {
+        e->shot_pos.x += e->shot_vel.x * dt;
+        e->shot_pos.y += e->shot_vel.y * dt;
+        if (e->shot_pos.x < 0.0f || e->shot_pos.x > (float)(MAP_WIDTH * TILE_SIZE))
+            e->shot_live = false;
+        else if (CheckCollisionCircleRec(e->shot_pos, ENEMY_SHOT_RADIUS, player_body)) {
+            e->shot_live = false;
+            hurt_player_from_enemy(p, e, (e->type == ENEMY_CANTOR) ? "Cantor hymn bolt hits" : "Canticle bolt hits");
+        }
+    }
 
     if (attack_active && e->hurt_iframes <= 0.0f && CheckCollisionRecs(*attack, e->bounds)) {
         e->hp--;
         e->hurt_iframes = ENEMY_HURT_IFRAMES;
         e->hurt_flash = 0.12f;
         *hitstop = HITSTOP_DURATION;
-        float cx = e->bounds.x + e->bounds.width * 0.5f;
-        float px = player_pos.x + PLAYER_DRAW_W * 0.5f;
-        float knock = (cx >= px) ? ENEMY_KNOCKBACK : -ENEMY_KNOCKBACK;
+        float knock = (enemy_center_x >= player_center_x) ? ENEMY_KNOCKBACK : -ENEMY_KNOCKBACK;
         e->bounds.x += knock * dt * 6.0f;
+        if (e->type == ENEMY_CANTOR && e->hp <= 2 && !e->enrage_phase) {
+            e->enrage_phase = true;
+            push_toast("Cantor enrages", 1.4f);
+        }
         if (e->hp <= 0) {
             e->dead = true;
-            g_dummy_defeated = true;
-            g_has_veil_drift = true;
-            g_shortcut_unlocked = true;
-            push_toast("Cantor falls — Veil Drift; shortcut opens", 2.5f);
+            e->shot_live = false;
+            if (e->type == ENEMY_CANTOR) {
+                g_dummy_defeated = true;
+                g_has_veil_drift = true;
+                g_shortcut_unlocked = true;
+                push_toast("Cantor falls — Veil Drift; shortcut opens", 2.5f);
+            } else {
+                push_toast("Echo disperses", 1.2f);
+            }
         }
     }
+
+    if (melee_attack_active && CheckCollisionRecs(player_body, melee_hit))
+        hurt_player_from_enemy(p, e, enemy_name(e->type));
 }
 
 static void draw_pickups_world(void)
@@ -1220,12 +1520,14 @@ int main(void)
     build_room(g_room);
 
     if (!MOBILE_BUILD) SetConfigFlags(FLAG_WINDOW_RESIZABLE);
-    InitWindow(start_w, start_h, "The Sunken Choir — Phase 2");
+    InitWindow(start_w, start_h, "The Sunken Choir — Phase 3 kickoff");
 
     Texture2D player_tex = {0};
+    Texture2D attack_tex = {0};
     Texture2D tile_tex = {0};
     Texture2D enemy_tex = {0};
     bool use_player_sprite = false;
+    bool use_attack_sprite = false;
     bool use_tile_sprite = false;
     bool use_enemy_sprite = false;
 
@@ -1233,6 +1535,9 @@ int main(void)
         use_player_sprite = load_first_hero(&player_tex);
         if (use_player_sprite)
             SetTextureFilter(player_tex, TEXTURE_FILTER_POINT);
+        use_attack_sprite = load_texture_asset(&attack_tex, ASSET_HERO_ATTACK);
+        if (use_attack_sprite)
+            SetTextureFilter(attack_tex, TEXTURE_FILTER_POINT);
 
         use_tile_sprite = load_first_tile(&tile_tex);
         if (use_tile_sprite)
@@ -1246,8 +1551,21 @@ int main(void)
     int sprite_frame_w = (int)PLAYER_DRAW_W;
     int sprite_frame_h = (int)PLAYER_DRAW_H;
     int sprite_frame_count = 1;
+    int attack_frame_w = (int)PLAYER_DRAW_W;
+    int attack_frame_h = (int)PLAYER_DRAW_H;
+    int attack_frame_count = 1;
     if (use_player_sprite)
         compute_horizontal_strip(player_tex, &sprite_frame_w, &sprite_frame_h, &sprite_frame_count);
+    if (use_attack_sprite) {
+        int fw = attack_tex.width / HERO_ATTACK_FRAMES;
+        if (fw > 0) {
+            attack_frame_w = fw;
+            attack_frame_h = attack_tex.height;
+            attack_frame_count = HERO_ATTACK_FRAMES;
+        } else {
+            use_attack_sprite = false;
+        }
+    }
 
     Player player = {0};
     player.position = g_spawn;
@@ -1255,8 +1573,7 @@ int main(void)
     latch_doors_from_player(&player);
 
     DummyEnemy enemy = {0};
-    enemy.bounds = east_enemy_spawn();
-    enemy.hp = ENEMY_MAX_HP;
+    enemy.type = ENEMY_NONE;
     enemy.dead = true;
     sync_dummy_for_room(&enemy);
 
@@ -1285,6 +1602,18 @@ int main(void)
                 if (use_player_sprite) {
                     SetTextureFilter(player_tex, TEXTURE_FILTER_POINT);
                     compute_horizontal_strip(player_tex, &sprite_frame_w, &sprite_frame_h, &sprite_frame_count);
+                }
+                use_attack_sprite = load_texture_asset(&attack_tex, ASSET_HERO_ATTACK);
+                if (use_attack_sprite) {
+                    SetTextureFilter(attack_tex, TEXTURE_FILTER_POINT);
+                    int fw = attack_tex.width / HERO_ATTACK_FRAMES;
+                    if (fw > 0) {
+                        attack_frame_w = fw;
+                        attack_frame_h = attack_tex.height;
+                        attack_frame_count = HERO_ATTACK_FRAMES;
+                    } else {
+                        use_attack_sprite = false;
+                    }
                 }
                 use_tile_sprite = load_first_tile(&tile_tex);
                 if (use_tile_sprite) SetTextureFilter(tile_tex, TEXTURE_FILTER_POINT);
@@ -1326,8 +1655,8 @@ int main(void)
 
         Rectangle atk = attack_hitbox(&player);
         bool atk_active = attack_is_active(&player);
-        if (dt > 0.0f && g_room == ROOM_EAST)
-            update_enemy(&enemy, &atk, atk_active, &hitstop_timer, player.position, dt);
+        if (dt > 0.0f)
+            update_enemy(&enemy, &player, &atk, atk_active, &hitstop_timer, dt);
 
         float move_in = input.move_x;
         {
@@ -1401,48 +1730,90 @@ int main(void)
             if (g_has_hazard && !g_has_veil_drift)
                 DrawRectangleRec(g_hazard, (Color){ 180, 40, 50, 70 });
 
-            if (g_room == ROOM_EAST && !enemy.dead) {
+            if (!enemy.dead) {
+                Color enemy_tint = WHITE;
+                if (enemy.type == ENEMY_CANTOR) enemy_tint = (Color){ 255, 242, 145, 255 };
+                else if (enemy.type == ENEMY_CASTER) enemy_tint = (Color){ 190, 220, 255, 255 };
+                else if (enemy.type == ENEMY_TANK) enemy_tint = (Color){ 210, 185, 170, 255 };
                 if (use_enemy_sprite) {
                     Rectangle src = { 0.0f, 0.0f, (float)enemy_tex.width, (float)enemy_tex.height };
-                    DrawTexturePro(enemy_tex, src, enemy.bounds, (Vector2){ 0.0f, 0.0f }, 0.0f, WHITE);
+                    if (enemy.dir < 0) {
+                        src.x = (float)enemy_tex.width;
+                        src.width = -(float)enemy_tex.width;
+                    }
+                    DrawTexturePro(enemy_tex, src, enemy.bounds, (Vector2){ 0.0f, 0.0f }, 0.0f, enemy_tint);
                     if (enemy.hurt_flash > 0.0f)
                         DrawRectangleRec(enemy.bounds, (Color){ 255, 255, 255, 90 });
                 } else {
                     Color ec = (enemy.hurt_flash > 0.0f) ? WHITE : (Color){ 160, 72, 96, 255 };
+                    if (enemy.type == ENEMY_CANTOR) ec = (Color){ 220, 190, 85, 255 };
                     DrawRectangleRec(enemy.bounds, ec);
                 }
                 if (!MOBILE_BUILD)
                     DrawRectangleLinesEx(enemy.bounds, 2.0f, (Color){ 40, 36, 44, 255 });
+                if (enemy.type == ENEMY_CANTOR) {
+                    Vector2 c = { enemy.bounds.x + enemy.bounds.width * 0.5f, enemy.bounds.y + enemy.bounds.height * 0.5f };
+                    float rr = enemy.bounds.width * 0.7f + (enemy.enrage_phase ? 10.0f : 0.0f);
+                    DrawCircleLines((int)c.x, (int)c.y, rr, (Color){ 255, 220, 120, 220 });
+                } else if (enemy.strike_timer > 0.0f && enemy.strike_timer < 0.20f) {
+                    DrawRectangleLinesEx(enemy.bounds, 3.0f, (Color){ 255, 140, 120, 240 });
+                }
+            }
+            if (enemy.shot_live) {
+                Color shot_col = (enemy.type == ENEMY_CANTOR) ? (Color){ 255, 220, 90, 245 } : (Color){ 120, 210, 255, 240 };
+                DrawCircleV(enemy.shot_pos, ENEMY_SHOT_RADIUS, shot_col);
             }
 
             if (use_player_sprite) {
-                int af = player.anim_frame;
-                if (sprite_frame_count > 0) af %= sprite_frame_count;
-                if (af < 0) af = 0;
-                Color tint = WHITE;
-                if (player.state == PLAYER_ATTACKING) {
-                    if (sprite_frame_count >= 2)
-                        af = 1;
-                    else if (attack_is_active(&player))
-                        tint = (Color){ 255, 210, 170, 255 };
+                if (player.state == PLAYER_ATTACKING && use_attack_sprite && attack_frame_count > 0) {
+                    float prog = (ATTACK_DURATION - player.state_timer) / ATTACK_DURATION;
+                    if (prog < 0.0f) prog = 0.0f;
+                    if (prog > 0.999f) prog = 0.999f;
+                    int af = (int)(prog * (float)attack_frame_count);
+                    if (af < 0) af = 0;
+                    if (af >= attack_frame_count) af = attack_frame_count - 1;
+                    float fw = (float)attack_frame_w;
+                    float fh = (float)attack_frame_h;
+                    float frame_left = (float)(af * attack_frame_w);
+                    Rectangle fr = { frame_left, 0.0f, fw, fh };
+                    if (player.facing < 0) {
+                        fr.x = frame_left + fw;
+                        fr.width = -fw;
+                    }
+                    float dest_w = PLAYER_DRAW_W;
+                    float dest_h = fh * (PLAYER_DRAW_W / fw);
+                    float draw_x = player.position.x + (float)player.facing * 6.0f;
+                    float draw_y = player.position.y + PLAYER_DRAW_H - HITBOX_PAD - dest_h;
+                    Rectangle dest = { draw_x, draw_y, dest_w, dest_h };
+                    DrawTexturePro(attack_tex, fr, dest, (Vector2){ 0.0f, 0.0f }, 0.0f, WHITE);
+                } else {
+                    int af = player.anim_frame;
+                    if (sprite_frame_count > 0) af %= sprite_frame_count;
+                    if (af < 0) af = 0;
+                    Color tint = WHITE;
+                    if (player.state == PLAYER_ATTACKING) {
+                        if (sprite_frame_count >= 2)
+                            af = 1;
+                        else if (attack_is_active(&player))
+                            tint = (Color){ 255, 210, 170, 255 };
+                    }
+                    float fw = (float)sprite_frame_w;
+                    float fh = (float)sprite_frame_h;
+                    float frame_left = (float)(af * sprite_frame_w);
+                    Rectangle fr = { frame_left, 0.0f, fw, fh };
+                    if (player.facing < 0) {
+                        fr.x = frame_left + fw;
+                        fr.width = -fw;
+                    }
+                    float dest_w = PLAYER_DRAW_W;
+                    float dest_h = sprite_frame_h * (PLAYER_DRAW_W / (float)sprite_frame_w);
+                    float draw_x = player.position.x;
+                    float draw_y = player.position.y + PLAYER_DRAW_H - HITBOX_PAD - dest_h;
+                    if (player.state == PLAYER_ATTACKING && sprite_frame_count < 2 && attack_is_active(&player))
+                        draw_x += (float)player.facing * 4.0f;
+                    Rectangle dest = { draw_x, draw_y, dest_w, dest_h };
+                    DrawTexturePro(player_tex, fr, dest, (Vector2){ 0.0f, 0.0f }, 0.0f, tint);
                 }
-                float fw = (float)sprite_frame_w;
-                float fh = (float)sprite_frame_h;
-                float frame_left = (float)(af * sprite_frame_w);
-                /* Flip with negative source width (reliable in raylib); dest stays axis-aligned. */
-                Rectangle fr = { frame_left, 0.0f, fw, fh };
-                if (player.facing < 0) {
-                    fr.x = frame_left + fw;
-                    fr.width = -fw;
-                }
-                float dest_w = PLAYER_DRAW_W;
-                float dest_h = sprite_frame_h * (PLAYER_DRAW_W / (float)sprite_frame_w);
-                float draw_x = player.position.x;
-                float draw_y = player.position.y + PLAYER_DRAW_H - HITBOX_PAD - dest_h;
-                if (player.state == PLAYER_ATTACKING && sprite_frame_count < 2 && attack_is_active(&player))
-                    draw_x += (float)player.facing * 4.0f;
-                Rectangle dest = { draw_x, draw_y, dest_w, dest_h };
-                DrawTexturePro(player_tex, fr, dest, (Vector2){ 0.0f, 0.0f }, 0.0f, tint);
             } else {
                 Color pc = (player.iframes_timer > 0.0f && ((int)(GetTime() * 20.0) % 2 == 0))
                                ? (Color){ 200, 200, 220, 120 }
@@ -1459,8 +1830,10 @@ int main(void)
                 Rectangle hb = player_collider(player.position);
                 DrawRectangleLinesEx(hb, 1.0f, GREEN);
                 DrawRectangleLinesEx(atk, 1.0f, (attack_is_active(&player) ? YELLOW : GRAY));
-                if (g_room == ROOM_EAST && !enemy.dead) DrawRectangleLinesEx(enemy.bounds, 1.0f, ORANGE);
+                if (!enemy.dead) DrawRectangleLinesEx(enemy.bounds, 1.0f, ORANGE);
                 if (g_has_hazard) DrawRectangleLinesEx(g_hazard, 1.0f, RED);
+                if (enemy.shot_live)
+                    DrawCircleLines((int)enemy.shot_pos.x, (int)enemy.shot_pos.y, ENEMY_SHOT_RADIUS, ORANGE);
             }
         EndMode2D();
 
@@ -1486,6 +1859,8 @@ int main(void)
         }
         if (g_toast_timer > 0.0f && g_toast != NULL)
             DrawText(g_toast, 12, ty, 18, (Color){ 210, 215, 240, 255 });
+        if (!enemy.dead)
+            DrawText(enemy_name(enemy.type), 12, ty + 22, 16, (Color){ 200, 180, 165, 255 });
 
         draw_minimap(screen_w);
 
@@ -1498,6 +1873,7 @@ int main(void)
     }
 
     if (use_player_sprite) UnloadTexture(player_tex);
+    if (use_attack_sprite) UnloadTexture(attack_tex);
     if (use_tile_sprite) UnloadTexture(tile_tex);
     if (use_enemy_sprite) UnloadTexture(enemy_tex);
     CloseWindow();
