@@ -98,6 +98,10 @@ Complete milestones **in order**. Each phase has **exit criteria**: do not skip 
 
 **Exit:** upgrading something makes you **want** to retry an old fight — optional.
 
+**Implementation (code):** `platformer.c` now includes a finite choir-shard economy, bench sinks (Cathedral Key, Choir Chart, and nail tier upgrades to III), lore interactables across the route, and an optional Health Shard branch that increases max HP. Combat damage scales with nail tier so progression changes fight pacing.
+
+**Manual test (Phase 4 closure):** Start a fresh run (`R`); collect shard caches/lore in Entrance + Hub; bench-interact (`E`) to buy Cathedral Key (3 shards), then Choir Chart (2 shards), then nail upgrades (Tier II/III). Confirm enemy kills award one-time room shard bounties, not infinite mandatory grind. Clear Cantor and High Cantor and compare time-to-kill before/after upgrades. In Antechamber, wall-climb to the optional relic and verify Health Shard raises HP cap by 1.
+
 ---
 
 ## Phase 5 — Content, pacing, juice

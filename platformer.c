@@ -1,10 +1,11 @@
 /*
- * Phase 2+3 slice — expanded room chain + enemy archetypes + final boss gate.
+ * Phase 2+3+4 slice — world chain + combat roster + thin RPG layer.
  * Tunables: "Gameplay tuning" below.
  * Manual test: explore Entrance→Hub; test enemy contact + attack windows in each room;
  *   take key; bench (E); East (key) — cling + Cantor → drift;
  *   Hub south (cling) → Shaft — map pickup; right exit (drift) → Gate bench;
- *   Gate east (key) → Bellcrown; defeat High Cantor to open final door to Stillwater.
+ *   Gate east (bench-forged key) → Bellcrown; defeat High Cantor to open final door to Stillwater.
+ *   Use benches for key/map/nail upgrades with shards; find lore nodes and optional Health Shard.
  *   M map if owned. R full reset. F1 hitboxes.
  *
  * Art (PNG): tries assets/<file> first, then cwd. Canonical names/fallbacks live in src/assets_loader.c.
@@ -59,9 +60,11 @@
 #define ENEMY_AGGRO_RADIUS      360.0f
 #define ENEMY_AGGRO_LOSE_RADIUS 500.0f
 #define ENEMY_AGGRO_LOSE_TIME     0.75f
-#define ENEMY_MELEE_W             58.0f
-#define ENEMY_MELEE_H             44.0f
+#define ENEMY_MELEE_W             36.0f
+#define ENEMY_MELEE_H             28.0f
+#define ENEMY_MELEE_FRONT_PAD      0.0f
 #define ENEMY_FAIR_FIGHT_RADIUS  760.0f
+#define ENEMY_SHOT_HIT_RADIUS      5.0f
 
 #define FADE_SPEED            4.0f
 #define TRANSITION_COOLDOWN   0.18f
@@ -69,6 +72,14 @@
 #define PICKUP_RADIUS         28.0f
 #define MAX_DOORS             8
 #define ROOM_COUNT            7
+#define LORE_COUNT            5
+
+#define KEY_SHARD_COST        3
+#define MAP_SHARD_COST        2
+#define NAIL_TIER2_COST       4
+#define NAIL_TIER3_COST       6
+
+#define PLAYER_BASE_HP        3
 
 #define PLAYER_DRAW_W       48.0f
 #define PLAYER_DRAW_H       64.0f
@@ -132,6 +143,22 @@ typedef struct PickupState {
     bool collected;
 } PickupState;
 
+typedef enum LoreNeed {
+    LORE_NEED_NONE = 0,
+    LORE_NEED_CLING
+} LoreNeed;
+
+typedef struct LoreNode {
+    RoomId room;
+    Vector2 pos;
+    LoreNeed need;
+    int shard_reward;
+    bool grant_health_shard;
+    bool consumed;
+    const char *text;
+    const char *locked_text;
+} LoreNode;
+
 typedef enum EnemyType {
     ENEMY_NONE = 0,
     ENEMY_TANK,
@@ -170,6 +197,10 @@ static bool g_has_veil_drift = false;
 static bool g_has_map = false;
 static bool g_map_open = false;
 static bool g_mobile_run_mode = true;
+static bool g_health_shard_found = false;
+static int  g_choir_shards = 0;
+static int  g_nail_tier = 1;
+static bool g_room_bounty_claimed[ROOM_COUNT];
 
 static bool g_dummy_defeated = false;
 static bool g_high_cantor_defeated = false;
@@ -177,6 +208,7 @@ static bool g_shortcut_unlocked = false;
 static PickupState g_pick_key = { 0 };
 static PickupState g_pick_cling = { 0 };
 static PickupState g_pick_map = { 0 };
+static LoreNode g_lore_nodes[LORE_COUNT];
 
 static float g_gate_msg_timer = 0.0f;
 static const char *g_gate_msg = NULL;
@@ -202,6 +234,8 @@ typedef struct Player {
     float attack_cd_timer;
     int anim_frame;
     float anim_time;
+    int hp;
+    int max_hp;
 } Player;
 
 typedef struct DummyEnemy {
@@ -267,6 +301,11 @@ static const char *enemy_name(EnemyType type);
 static void sync_dummy_for_room(DummyEnemy *e);
 static Rectangle player_collider(Vector2 pos);
 static void push_toast(const char *msg, float sec);
+static void init_lore_nodes(void);
+static int room_bounty(RoomId room);
+static int next_nail_upgrade_cost(void);
+static void heal_player(Player *p);
+static void try_lore_interact(Player *p, const InputState *in);
 static void gather_input(InputState *in, TouchUi *touch_ui, int screen_w, int screen_h);
 static void draw_touch_controls(const TouchUi *touch_ui);
 
@@ -1037,13 +1076,88 @@ static void push_toast(const char *msg, float sec)
     g_toast_timer = sec;
 }
 
+static int room_bounty(RoomId room)
+{
+    switch (room) {
+        case ROOM_ENTRANCE: return 2;
+        case ROOM_HUB: return 2;
+        case ROOM_SHAFT: return 2;
+        case ROOM_EAST: return 4;
+        case ROOM_ANTECHAMBER: return 3;
+        case ROOM_BELLCROWN: return 5;
+        default: return 0;
+    }
+}
+
+static int next_nail_upgrade_cost(void)
+{
+    if (g_nail_tier <= 1) return NAIL_TIER2_COST;
+    if (g_nail_tier == 2) return NAIL_TIER3_COST;
+    return 0;
+}
+
+static void heal_player(Player *p)
+{
+    p->hp = p->max_hp;
+}
+
+static bool lore_need_met(LoreNeed need)
+{
+    switch (need) {
+        case LORE_NEED_NONE: return true;
+        case LORE_NEED_CLING: return g_has_chord_cling;
+        default: return true;
+    }
+}
+
+static void init_lore_nodes(void)
+{
+    g_lore_nodes[0] = (LoreNode){
+        ROOM_ENTRANCE,
+        (Vector2){ 12.0f * (float)TILE_SIZE, (float)(HUB_FLOOR_ROW * TILE_SIZE) - 44.0f },
+        LORE_NEED_NONE, 2, false, false,
+        "Pilgrim script: Spend shards at benches to temper your nail.",
+        NULL
+    };
+    g_lore_nodes[1] = (LoreNode){
+        ROOM_HUB,
+        (Vector2){ 33.0f * (float)TILE_SIZE, (float)(HUB_FLOOR_ROW * TILE_SIZE) - 44.0f },
+        LORE_NEED_NONE, 2, false, false,
+        "Bench etching: A key can be forged from three choir shards.",
+        NULL
+    };
+    g_lore_nodes[2] = (LoreNode){
+        ROOM_SHAFT,
+        (Vector2){ (float)(MAP_WIDTH / 2 * TILE_SIZE) + 2.0f, (float)((SHAFT_TOP_ROW + 8) * TILE_SIZE) - 38.0f },
+        LORE_NEED_NONE, 2, false, false,
+        "Wall hymn: Cartographers traded fragments of this map for two shards.",
+        NULL
+    };
+    g_lore_nodes[3] = (LoreNode){
+        ROOM_BELLCROWN,
+        (Vector2){ 8.0f * (float)TILE_SIZE, (float)((HUB_FLOOR_ROW - 5) * TILE_SIZE) - 38.0f },
+        LORE_NEED_NONE, 0, false, false,
+        "Bell plaque: Break the high cantor's rhythm, then strike twice.",
+        NULL
+    };
+    g_lore_nodes[4] = (LoreNode){
+        ROOM_ANTECHAMBER,
+        (Vector2){ 39.0f * (float)TILE_SIZE, (float)((HUB_FLOOR_ROW - 6) * TILE_SIZE) - 38.0f },
+        LORE_NEED_CLING, 0, true, false,
+        "Relic found: Health Shard (+1 max HP).",
+        "Relic hangs high - Chord Cling required."
+    };
+}
+
 static const char *current_objective_text(void)
 {
-    if (!g_has_cathedral_key) return "Objective: find Cathedral Key in Entrance";
+    if (!g_has_cathedral_key) return "Objective: gather shards, then buy Cathedral Key at a bench";
     if (!g_dummy_defeated) return "Objective: defeat Cantor in East arena";
     if (!g_has_chord_cling) return "Objective: collect Chord Cling in East arena";
-    if (!g_has_map) return "Objective: enter Shaft and collect Choir Chart";
+    if (!g_has_map) return "Objective: buy Choir Chart at a bench (2 shards)";
     if (!g_high_cantor_defeated) return "Objective: reach Bellcrown and defeat High Cantor";
+    if (g_nail_tier < 3) return "Optional: temper your nail to tier III at benches";
+    if (!g_health_shard_found) return "Optional: find the hidden Health Shard branch";
     if (g_room != ROOM_STILLWATER) return "Objective: proceed to Stillwater";
     return "Objective: complete";
 }
@@ -1113,8 +1227,8 @@ static void try_pickups(Player *p)
     if (!g_pick_key.collected && g_room == ROOM_ENTRANCE &&
         v2dist(c, g_pick_key.pos) < PICKUP_RADIUS) {
         g_pick_key.collected = true;
-        g_has_cathedral_key = true;
-        push_toast("Cathedral Key", 1.6f);
+        g_choir_shards += 3;
+        push_toast("Found shard cache (+3)", 1.8f);
     }
     if (!g_pick_cling.collected && g_room == ROOM_EAST &&
         v2dist(c, g_pick_cling.pos) < PICKUP_RADIUS) {
@@ -1125,9 +1239,8 @@ static void try_pickups(Player *p)
     if (!g_pick_map.collected && g_room == ROOM_SHAFT &&
         v2dist(c, g_pick_map.pos) < PICKUP_RADIUS) {
         g_pick_map.collected = true;
-        g_has_map = true;
-        g_map_open = true;
-        push_toast("Choir Chart — M / Map button toggles", 2.0f);
+        g_choir_shards += 2;
+        push_toast("Recovered old shards (+2)", 1.8f);
     }
 }
 
@@ -1139,7 +1252,62 @@ static void try_bench(Player *p, const InputState *in)
     if (!CheckCollisionRecs(b, g_bench_zone)) return;
 
     g_spawn = g_bench_spawn;
-    push_toast("Mercy Bench — respawn set", 1.8f);
+    heal_player(p);
+
+    if (!g_has_cathedral_key && g_choir_shards >= KEY_SHARD_COST) {
+        g_choir_shards -= KEY_SHARD_COST;
+        g_has_cathedral_key = true;
+        push_toast("Bench rite complete: Cathedral Key forged", 2.1f);
+        return;
+    }
+    if (!g_has_map && g_choir_shards >= MAP_SHARD_COST) {
+        g_choir_shards -= MAP_SHARD_COST;
+        g_has_map = true;
+        g_map_open = true;
+        push_toast("Choir Chart purchased", 1.8f);
+        return;
+    }
+    {
+        int cost = next_nail_upgrade_cost();
+        if (cost > 0 && g_choir_shards >= cost) {
+            g_choir_shards -= cost;
+            g_nail_tier++;
+            push_toast((g_nail_tier == 2) ? "Nail tempered to Tier II" : "Nail tempered to Tier III", 2.0f);
+            return;
+        }
+    }
+    push_toast("Mercy Bench — respawn set; wounds mended", 1.8f);
+}
+
+static void try_lore_interact(Player *p, const InputState *in)
+{
+    if (!in->interact_pressed) return;
+    Vector2 c = { p->position.x + PLAYER_DRAW_W * 0.5f, p->position.y + PLAYER_DRAW_H * 0.5f };
+    for (int i = 0; i < LORE_COUNT; i++) {
+        LoreNode *node = &g_lore_nodes[i];
+        if (node->room != g_room) continue;
+        if (v2dist(c, node->pos) > BENCH_INTERACT_R) continue;
+
+        if (!lore_need_met(node->need)) {
+            if (node->locked_text) push_toast(node->locked_text, 1.8f);
+            return;
+        }
+
+        if (!node->consumed) {
+            node->consumed = true;
+            if (node->shard_reward > 0) g_choir_shards += node->shard_reward;
+            if (node->grant_health_shard && !g_health_shard_found) {
+                g_health_shard_found = true;
+                p->max_hp += 1;
+                p->hp += 1;
+                push_toast("Relic found: Health Shard (+1 max HP)", 2.2f);
+                return;
+            }
+        }
+
+        if (node->text) push_toast(node->text, 2.4f);
+        return;
+    }
 }
 
 static Rectangle east_enemy_spawn(void)
@@ -1273,6 +1441,9 @@ static void reset_run(Player *p, DummyEnemy *e, float *hitstop)
     g_dummy_defeated = false;
     g_high_cantor_defeated = false;
     g_shortcut_unlocked = false;
+    g_health_shard_found = false;
+    g_choir_shards = 0;
+    g_nail_tier = 1;
     g_pick_key.collected = false;
     g_pick_cling.collected = false;
     g_pick_map.collected = false;
@@ -1283,6 +1454,8 @@ static void reset_run(Player *p, DummyEnemy *e, float *hitstop)
     g_toast = NULL;
     g_toast_timer = 0.0f;
     g_transition_cd = 0.0f;
+    memset(g_room_bounty_claimed, 0, sizeof g_room_bounty_claimed);
+    init_lore_nodes();
 
     memset(g_room_seen, 0, sizeof g_room_seen);
     g_room = ROOM_ENTRANCE;
@@ -1300,6 +1473,8 @@ static void reset_run(Player *p, DummyEnemy *e, float *hitstop)
     p->iframes_timer = 0.0f;
     p->anim_frame = 0;
     p->anim_time = 0.0f;
+    p->max_hp = PLAYER_BASE_HP;
+    p->hp = p->max_hp;
 
     sync_dummy_for_room(e);
     *hitstop = 0.0f;
@@ -1324,12 +1499,27 @@ static void hurt_player_from_enemy(Player *p, const DummyEnemy *e, const char *r
 {
     if (p->iframes_timer > 0.0f) return;
     p->iframes_timer = ENEMY_TOUCH_IFRAMES;
+    p->hp -= 1;
 
     float pcx = p->position.x + PLAYER_DRAW_W * 0.5f;
     float ecx = e->bounds.x + e->bounds.width * 0.5f;
     float dir = (pcx >= ecx) ? 1.0f : -1.0f;
     p->velocity.x = dir * ENEMY_TOUCH_KNOCK;
     p->velocity.y = -300.0f;
+    if (p->hp <= 0) {
+        p->position = g_spawn;
+        p->velocity = (Vector2){ 0.0f, 0.0f };
+        p->on_ground = false;
+        p->coyote_timer = 0.0f;
+        p->jump_buffer_timer = 0.0f;
+        p->state = PLAYER_NORMAL;
+        p->state_timer = 0.0f;
+        p->attack_cd_timer = 0.0f;
+        p->iframes_timer = 0.8f;
+        heal_player(p);
+        push_toast("You fall - revived at the last bench", 1.9f);
+        return;
+    }
     push_toast(reason, 1.2f);
 }
 
@@ -1517,7 +1707,9 @@ static void update_enemy(DummyEnemy *e, Player *p, const Rectangle *attack, bool
     if (body_attack_active) {
         float mw = ENEMY_MELEE_W;
         float mh = ENEMY_MELEE_H;
-        float mx = (e->dir >= 0) ? (e->bounds.x + e->bounds.width - 6.0f) : (e->bounds.x - mw + 6.0f);
+        float mx = (e->dir >= 0)
+                   ? (e->bounds.x + e->bounds.width - ENEMY_MELEE_FRONT_PAD)
+                   : (e->bounds.x - mw + ENEMY_MELEE_FRONT_PAD);
         float my = e->bounds.y + e->bounds.height * 0.5f - mh * 0.5f;
         melee_hit = (Rectangle){ mx, my, mw, mh };
         melee_attack_active = true;
@@ -1538,14 +1730,14 @@ static void update_enemy(DummyEnemy *e, Player *p, const Rectangle *attack, bool
         e->shot_pos.y += e->shot_vel.y * dt;
         if (e->shot_pos.x < 0.0f || e->shot_pos.x > (float)(MAP_WIDTH * TILE_SIZE))
             e->shot_live = false;
-        else if (CheckCollisionCircleRec(e->shot_pos, ENEMY_SHOT_RADIUS, player_body)) {
+        else if (CheckCollisionCircleRec(e->shot_pos, ENEMY_SHOT_HIT_RADIUS, player_body)) {
             e->shot_live = false;
             hurt_player_from_enemy(p, e, (e->type == ENEMY_CANTOR) ? "Cantor hymn bolt hits" : "Canticle bolt hits");
         }
     }
 
     if (attack_active && e->hurt_iframes <= 0.0f && CheckCollisionRecs(*attack, e->bounds)) {
-        e->hp--;
+        e->hp -= g_nail_tier;
         e->hurt_iframes = ENEMY_HURT_IFRAMES;
         e->hurt_flash = 0.12f;
         *hitstop = HITSTOP_DURATION;
@@ -1559,16 +1751,20 @@ static void update_enemy(DummyEnemy *e, Player *p, const Rectangle *attack, bool
         if (e->hp <= 0) {
             e->dead = true;
             e->shot_live = false;
+            if (!g_room_bounty_claimed[(int)g_room]) {
+                g_room_bounty_claimed[(int)g_room] = true;
+                g_choir_shards += room_bounty(g_room);
+            }
             if (e->type == ENEMY_CANTOR) {
                 g_dummy_defeated = true;
                 g_has_veil_drift = true;
                 g_shortcut_unlocked = true;
-                push_toast("Cantor falls — Veil Drift; shortcut opens", 2.5f);
+                push_toast("Cantor falls - Veil Drift, shortcut, and shards earned", 2.6f);
             } else if (e->type == ENEMY_HIGH_CANTOR) {
                 g_high_cantor_defeated = true;
-                push_toast("High Cantor falls — path to Stillwater opens", 2.6f);
+                push_toast("High Cantor falls - path to Stillwater opens", 2.5f);
             } else {
-                push_toast("Echo disperses", 1.2f);
+                push_toast("Echo disperses - shards collected", 1.5f);
             }
         }
     }
@@ -1580,11 +1776,24 @@ static void update_enemy(DummyEnemy *e, Player *p, const Rectangle *attack, bool
 static void draw_pickups_world(void)
 {
     if (!g_pick_key.collected && g_room == ROOM_ENTRANCE)
-        DrawCircleV(g_pick_key.pos, 10.0f, (Color){ 230, 200, 80, 255 });
+        DrawCircleV(g_pick_key.pos, 10.0f, (Color){ 210, 190, 120, 255 });
     if (!g_pick_cling.collected && g_room == ROOM_EAST)
         DrawCircleV(g_pick_cling.pos, 10.0f, (Color){ 120, 200, 255, 255 });
     if (!g_pick_map.collected && g_room == ROOM_SHAFT)
-        DrawCircleV(g_pick_map.pos, 10.0f, (Color){ 90, 200, 190, 255 });
+        DrawCircleV(g_pick_map.pos, 10.0f, (Color){ 180, 150, 215, 255 });
+}
+
+static void draw_lore_nodes_world(void)
+{
+    for (int i = 0; i < LORE_COUNT; i++) {
+        const LoreNode *node = &g_lore_nodes[i];
+        if (node->room != g_room) continue;
+        Color c = node->consumed ? (Color){ 90, 95, 110, 220 } : (Color){ 190, 220, 255, 230 };
+        if (node->grant_health_shard && !node->consumed)
+            c = (Color){ 120, 245, 185, 235 };
+        DrawCircleV(node->pos, 11.0f, c);
+        DrawCircleLines((int)node->pos.x, (int)node->pos.y, 15.0f, (Color){ 30, 35, 44, 220 });
+    }
 }
 
 static void draw_minimap(int screen_w)
@@ -1616,6 +1825,8 @@ int main(void)
     const int start_h = BASE_SCREEN_H;
 
     memset(g_room_seen, 0, sizeof g_room_seen);
+    memset(g_room_bounty_claimed, 0, sizeof g_room_bounty_claimed);
+    init_lore_nodes();
 #if PLAYTEST_START_IN_SHAFT
     g_has_chord_cling = true; /* same as after picking up Cling — south portal is open */
     g_room = ROOM_SHAFT;
@@ -1628,7 +1839,7 @@ int main(void)
     build_room(g_room);
 
     if (!MOBILE_BUILD) SetConfigFlags(FLAG_WINDOW_RESIZABLE);
-    InitWindow(start_w, start_h, "The Sunken Choir — Phase 2+3 slice");
+    InitWindow(start_w, start_h, "The Sunken Choir — Phase 4 slice");
 
     Texture2D player_tex = {0};
     Texture2D attack_tex = {0};
@@ -1678,6 +1889,8 @@ int main(void)
     Player player = {0};
     player.position = g_spawn;
     player.facing = 1;
+    player.max_hp = PLAYER_BASE_HP;
+    player.hp = player.max_hp;
     latch_doors_from_player(&player);
 
     DummyEnemy enemy = {0};
@@ -1758,6 +1971,7 @@ int main(void)
         if (dt > 0.0f) try_transition(&player);
         if (dt > 0.0f) try_pickups(&player);
         if (dt > 0.0f) try_bench(&player, &input);
+        if (dt > 0.0f) try_lore_interact(&player, &input);
 
         tick_fade(&player, &enemy, raw_dt);
 
@@ -1834,6 +2048,7 @@ int main(void)
             }
 
             draw_pickups_world();
+            draw_lore_nodes_world();
 
             if (g_has_hazard && !g_has_veil_drift)
                 DrawRectangleRec(g_hazard, (Color){ 180, 40, 50, 70 });
@@ -1965,10 +2180,13 @@ int main(void)
                 DrawText("If you see this, rendering works.", 70, screen_h / 2 + 8, 24, (Color){ 35, 42, 60, 255 });
             }
         } else {
-            DrawText("A/D  Space  Shift sprint  J attack  E bench  R reset  F1 debug  M chart", 12, 10,
+            DrawText("A/D Space Shift sprint J attack E interact/bench R reset F1 debug M chart", 12, 10,
                      17, (Color){ 200, 198, 210, 255 });
         }
         int ty = 32;
+        DrawText(TextFormat("HP %d/%d  Shards %d  Nail T%d", player.hp, player.max_hp, g_choir_shards, g_nail_tier),
+                 12, ty, 17, (Color){ 232, 220, 184, 255 });
+        ty += 22;
         DrawText(current_objective_text(), 12, ty, 17, (Color){ 185, 220, 205, 255 });
         ty += 22;
         if (g_gate_msg_timer > 0.0f && g_gate_msg != NULL) {
@@ -1980,7 +2198,7 @@ int main(void)
         if (!enemy.dead)
             DrawText(enemy_name(enemy.type), 12, ty + 22, 16, (Color){ 200, 180, 165, 255 });
         if (g_room == ROOM_STILLWATER)
-            DrawText("Stillwater reached — Phase 3 critical path complete", 12, ty + 44, 18, (Color){ 175, 220, 205, 255 });
+            DrawText("Stillwater reached — Phase 4 critical path complete", 12, ty + 44, 18, (Color){ 175, 220, 205, 255 });
 
         draw_minimap(screen_w);
 
