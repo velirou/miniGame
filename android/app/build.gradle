@@ -1,0 +1,59 @@
+plugins {
+    id("com.android.application")
+}
+
+android {
+    namespace "com.velir.minigame"
+    compileSdk 35
+
+    defaultConfig {
+        applicationId "com.velir.minigame"
+        minSdk 24
+        targetSdk 35
+        versionCode 1
+        versionName "1.0"
+        ndk {
+            abiFilters "arm64-v8a"
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
+        }
+        debug {
+            debuggable true
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path file("src/main/cpp/CMakeLists.txt")
+            version "3.31.6"
+        }
+    }
+
+    sourceSets {
+        main {
+            assets.srcDirs = ["../../assets", "src/main/assets"]
+        }
+    }
+}
+
+tasks.register("syncGameAssets", Sync) {
+    from("../..") {
+        include "sprite-hero.png"
+        include "medieval-rpg-main-character-d002.png"
+        include "player_spritesheet.png"
+        include "tile-ground.png"
+        include "tile.png"
+        include "sprite-simple-enemy.png"
+        include "sprite-quest-map.png"
+    }
+    into("src/main/assets")
+}
+
+tasks.named("preBuild").configure {
+    dependsOn("syncGameAssets")
+}
