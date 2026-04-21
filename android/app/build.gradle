@@ -10,8 +10,8 @@ android {
         applicationId "com.velir.minigame"
         minSdk 24
         targetSdk 35
-        versionCode 1
-        versionName "1.0"
+        versionCode 3
+        versionName "1.0.2"
         ndk {
             abiFilters "arm64-v8a"
         }
@@ -49,6 +49,7 @@ tasks.register("syncGameAssets", Sync) {
         include "tile-ground.png"
         include "tile.png"
         include "sprite-simple-enemy.png"
+        include "sprite-hero-attack.png"
         include "sprite-quest-map.png"
     }
     into("src/main/assets")
