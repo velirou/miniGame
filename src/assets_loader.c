@@ -55,6 +55,16 @@ bool load_first_attack(Texture2D *out, bool mobile_build)
     return load_first_from_list(out, k_names, (int)(sizeof(k_names) / sizeof(k_names[0])), mobile_build);
 }
 
+bool load_first_jump(Texture2D *out, bool mobile_build)
+{
+    static const char *k_names[] = {
+        "hero-jump-strip.png",
+        "sprite-hero-jump.png",
+        "jump-hero-strip.png",
+    };
+    return load_first_from_list(out, k_names, (int)(sizeof(k_names) / sizeof(k_names[0])), mobile_build);
+}
+
 bool load_first_tile(Texture2D *out, bool mobile_build)
 {
     static const char *k_names[] = {

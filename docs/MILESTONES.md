@@ -117,6 +117,20 @@ Complete milestones **in order**. Each phase has **exit criteria**: do not skip 
 
 **Exit:** cold player session: **fun** + **clear goal** in first 10 minutes.
 
+**Implementation (code):** `platformer.c` now ships a Phase 5 polish pass: options overlay with runtime key remaps (movement/combat/interact/map), accessibility controls (master/music/SFX volume + screenshake toggle), camera shake + hit/land/pickup particle effects, stronger objective signposting for each progression step, and synthesized zone/combat audio hooks plus combat stingers so combat windows are not silent.
+
+**Manual test (Phase 5 closure):** Start fresh (`R`) and play Entrance→Hub→East for 10+ minutes; verify objective text always points to the next route. During combat, confirm telegraph/hit/land feedback (particles + optional shake) and audible pulse/stinger hooks. Open options (`TAB` or `O`), remap at least jump/attack/map, and confirm gameplay uses new bindings immediately. Set master/music/SFX to low and back up; confirm audible change. Toggle screenshake off, re-enter combat, and verify impacts no longer move the camera.
+
+**Phase 5 sign-off status:** **Ready for closure after external cold-player validation.**
+
+- Internal implementation: complete (5.1–5.4 systems in place)
+- Internal build/smoke verification: complete
+- External cold-player session: **pending** (required for final Phase 5 exit)
+
+Sign-off references:
+- `docs/PHASE5_CLOSEOUT_TEST.md`
+- `docs/PHASE5_VALIDATION_REPORT.md`
+
 ---
 
 ## Phase 6 — Steam production

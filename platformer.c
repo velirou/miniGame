@@ -1,12 +1,12 @@
 /*
- * Phase 2+3+4 slice — world chain + combat roster + thin RPG layer.
+ * Phase 2+3+4+5 slice — world chain + combat roster + thin RPG layer + polish pass.
  * Tunables: "Gameplay tuning" below.
  * Manual test: explore Entrance→Hub; test enemy contact + attack windows in each room;
  *   take key; bench (E); East (key) — cling + Cantor → drift;
  *   Hub south (cling) → Shaft — map pickup; right exit (drift) → Gate bench;
  *   Gate east (bench-forged key) → Bellcrown; defeat High Cantor to open final door to Stillwater.
  *   Use benches for key/map/nail upgrades with shards; find lore nodes and optional Health Shard.
- *   M map if owned. R full reset. F1 hitboxes.
+ *   M map if owned. TAB options (remap, volume, screenshake). R full reset. F1 hitboxes.
  *
  * Art (PNG): tries assets/<file> first, then cwd. Canonical names/fallbacks live in src/assets_loader.c.
  */
@@ -15,6 +15,8 @@
 #include "include/assets_loader.h"
 #include <math.h>
 #include <stdbool.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* --- Gameplay tuning (Phase 1) --- */
@@ -87,7 +89,11 @@
 #define ENEMY_DRAW_H        64.0f
 #define HITBOX_PAD            8.0f
 /* Sprite drawn this many px up so feet line up with collider feet (hitbox inset was sinking art) */
-#define PLAYER_SPRITE_Y_OFF (-HITBOX_PAD)
+#define PLAYER_SPRITE_Y_OFF (-0.5f)
+#define ENEMY_SPRITE_Y_OFF  (3.5f)
+#define GROUND_Y_FOR(draw_h, tile_row) ((float)((tile_row) * TILE_SIZE) - (draw_h) + HITBOX_PAD - 0.5f)
+#define PLAYER_GROUND_Y(tile_row) GROUND_Y_FOR(PLAYER_DRAW_H, (tile_row))
+#define ENEMY_GROUND_Y(tile_row)  GROUND_Y_FOR(ENEMY_DRAW_H, (tile_row))
 
 #define BASE_SCREEN_W        960
 #define BASE_SCREEN_H        540
@@ -96,6 +102,18 @@
 #define TOUCH_BTN_ALPHA      100
 #define TOUCH_BTN_TEXT_ALPHA 220
 #define MOBILE_CAM_ZOOM       1.45f
+
+#define MAX_FX_PARTICLES      96
+#define MAX_JUMP_SEQ_FRAMES   24
+#define FX_SHAKE_DECAY         5.4f
+#define FX_SHAKE_NOISE         0.85f
+#define FX_SHAKE_SMOOTH       14.0f
+#define FX_SHAKE_JITTER_TIME   0.025f
+#define SETTINGS_FILE_NAME    "sunken_choir_settings.cfg"
+#define DEFAULT_MASTER_VOL     0.86f
+#define DEFAULT_MUSIC_VOL      0.42f
+#define DEFAULT_SFX_VOL        0.66f
+#define BGM_BASE_GAIN          0.72f
 
 #if defined(PLATFORM_ANDROID) || defined(PLATFORM_IOS)
 #define MOBILE_BUILD 1
@@ -215,6 +233,30 @@ static const char *g_gate_msg = NULL;
 /* Brief safety after fade-in; door latch (prev-in-zone) does most of the work. */
 static float g_transition_cd = 0.0f;
 static bool  g_prev_in_door[MAX_DOORS];
+static float g_camera_shake = 0.0f;
+static Vector2 g_camera_shake_offset = { 0.0f, 0.0f };
+static Vector2 g_camera_shake_target = { 0.0f, 0.0f };
+static float g_camera_shake_jitter_timer = 0.0f;
+static float g_music_pulse_timer = 0.0f;
+static bool g_was_in_combat = false;
+static bool g_audio_ready = false;
+static bool g_bgm_loaded = false;
+static Music g_bgm = {0};
+static Sound g_sfx_jump = {0};
+static Sound g_sfx_footstep = {0};
+static Sound g_sfx_land = {0};
+static Sound g_sfx_hurt = {0};
+static Sound g_sfx_death = {0};
+static Sound g_sfx_attack_whiff = {0};
+static Sound g_sfx_attack_hit = {0};
+static Sound g_sfx_telegraph = {0};
+static Sound g_sfx_bench = {0};
+static Sound g_sfx_ui_confirm = {0};
+static Sound g_sfx_ui_cancel = {0};
+static Sound g_sfx_pickup = {0};
+static Sound g_sfx_zone_calm = {0};
+static Sound g_sfx_zone_combat = {0};
+static float g_footstep_cooldown = 0.0f;
 
 typedef enum PlayerState {
     PLAYER_NORMAL = 0,
@@ -273,8 +315,52 @@ typedef struct InputState {
     bool reset_pressed;
     bool toggle_debug_pressed;
     bool toggle_map_pressed;
+    bool options_pressed;
+    bool menu_up_pressed;
+    bool menu_down_pressed;
+    bool menu_left_pressed;
+    bool menu_right_pressed;
+    bool menu_confirm_pressed;
+    bool menu_cancel_pressed;
     bool using_touch;
 } InputState;
+
+typedef enum ControlAction {
+    ACTION_MOVE_LEFT = 0,
+    ACTION_MOVE_RIGHT,
+    ACTION_RUN,
+    ACTION_JUMP,
+    ACTION_ATTACK,
+    ACTION_INTERACT,
+    ACTION_MAP,
+    ACTION_COUNT
+} ControlAction;
+
+typedef struct ControlBindings {
+    int key[ACTION_COUNT];
+} ControlBindings;
+
+typedef struct FxParticle {
+    Vector2 pos;
+    Vector2 vel;
+    float life;
+    float max_life;
+    float size;
+    Color color;
+    bool active;
+} FxParticle;
+
+typedef struct JumpFrameAsset {
+    Texture2D tex;
+    Rectangle src;
+} JumpFrameAsset;
+
+typedef struct AccessibilitySettings {
+    float master_volume;
+    float music_volume;
+    float sfx_volume;
+    bool screenshake;
+} AccessibilitySettings;
 
 typedef struct TouchUi {
     Rectangle left_btn;
@@ -293,6 +379,9 @@ typedef struct TouchUi {
     bool map_down_prev;
 } TouchUi;
 
+static FxParticle g_particles[MAX_FX_PARTICLES];
+static AccessibilitySettings g_settings = { DEFAULT_MASTER_VOL, DEFAULT_MUSIC_VOL, DEFAULT_SFX_VOL, true };
+
 static Rectangle east_enemy_spawn(void);
 static Rectangle entrance_enemy_spawn(void);
 static Rectangle hub_enemy_spawn(void);
@@ -306,8 +395,32 @@ static int room_bounty(RoomId room);
 static int next_nail_upgrade_cost(void);
 static void heal_player(Player *p);
 static void try_lore_interact(Player *p, const InputState *in);
-static void gather_input(InputState *in, TouchUi *touch_ui, int screen_w, int screen_h);
+static void gather_input(InputState *in, const ControlBindings *bindings, TouchUi *touch_ui, int screen_w, int screen_h);
 static void draw_touch_controls(const TouchUi *touch_ui);
+static const char *action_name(ControlAction action);
+static void set_default_bindings(ControlBindings *bindings);
+static void spawn_land_dust(Vector2 feet, int facing);
+static void spawn_hit_burst(Vector2 pos, Color color, int count, float speed_min, float speed_max);
+static void tick_particles(float dt);
+static void draw_particles_world(void);
+static void add_camera_shake(float amount);
+static void init_audio_bank(void);
+static void update_background_music(const AccessibilitySettings *settings);
+static void update_audio_layering(bool in_combat, RoomId room, const AccessibilitySettings *settings, float dt);
+static void draw_options_menu(int screen_w, int screen_h, const ControlBindings *bindings,
+                              const AccessibilitySettings *settings, int selected, bool waiting_for_key);
+static const char *key_label(int keycode);
+static int pick_jump_frame(const Player *p, int jump_frame_count);
+static bool load_texture_candidate(Texture2D *out, const char *filename, bool mobile_build);
+static bool load_image_candidate(Image *out, const char *filename, bool mobile_build);
+static Rectangle opaque_bounds_from_image(Image img);
+static int load_jump_sequence(JumpFrameAsset *frames, int max_frames, bool mobile_build);
+static void clamp_settings(AccessibilitySettings *settings);
+static bool load_user_settings(ControlBindings *bindings, AccessibilitySettings *settings);
+static bool save_user_settings(const ControlBindings *bindings, const AccessibilitySettings *settings);
+static bool rect_overlaps_solid(Rectangle r);
+static void snap_rect_to_ground(Rectangle *r, int max_steps);
+static void snap_player_to_ground(Player *p);
 
 static int level_map[MAP_HEIGHT][MAP_WIDTH];
 
@@ -392,13 +505,13 @@ static void build_room_entrance(void)
 
     door_push((Rectangle){ (float)((MAP_WIDTH - 1) * TILE_SIZE - 8), (float)((fl - 3) * TILE_SIZE),
                            56.0f, (float)(5 * TILE_SIZE) },
-              ROOM_HUB, 2.5f * (float)TILE_SIZE, (float)(fl * TILE_SIZE) - PLAYER_DRAW_H - 0.5f, GATE_NONE);
+              ROOM_HUB, 2.5f * (float)TILE_SIZE, PLAYER_GROUND_Y(fl), GATE_NONE);
 
     if (!g_pick_key.collected)
         g_pick_key.pos = (Vector2){ 5.0f * (float)TILE_SIZE + 8.0f,
                                    (float)(fl * TILE_SIZE) - 48.0f };
 
-    g_spawn = (Vector2){ 3.0f * (float)TILE_SIZE, (float)(fl * TILE_SIZE) - PLAYER_DRAW_H - 0.5f };
+    g_spawn = (Vector2){ 3.0f * (float)TILE_SIZE, PLAYER_GROUND_Y(fl) };
 }
 
 /*
@@ -427,16 +540,16 @@ static void build_room_hub(void)
     g_bench_zone = (Rectangle){ 4.0f * (float)TILE_SIZE, (float)((fl - 2) * TILE_SIZE),
                                 (float)(3 * TILE_SIZE), (float)(2 * TILE_SIZE) };
     g_bench_spawn = (Vector2){ g_bench_zone.x + g_bench_zone.width * 0.5f - PLAYER_DRAW_W * 0.5f,
-                               (float)(fl * TILE_SIZE) - PLAYER_DRAW_H - 0.5f };
+                               PLAYER_GROUND_Y(fl) };
 
     door_push((Rectangle){ 8.0f, (float)((fl - 3) * TILE_SIZE), 40.0f, (float)(5 * TILE_SIZE) },
               ROOM_ENTRANCE,
-              (float)((MAP_WIDTH - 3) * TILE_SIZE), (float)(fl * TILE_SIZE) - PLAYER_DRAW_H - 0.5f, GATE_NONE);
+              (float)((MAP_WIDTH - 3) * TILE_SIZE), PLAYER_GROUND_Y(fl), GATE_NONE);
 
     door_push((Rectangle){ (float)((MAP_WIDTH - 1) * TILE_SIZE - 4), (float)((fl - 3) * TILE_SIZE),
                            44.0f, (float)(4 * TILE_SIZE) },
               ROOM_EAST, 6.0f * (float)TILE_SIZE,
-              (float)(EAST_FLOOR_ROW * TILE_SIZE) - PLAYER_DRAW_H - 0.5f, GATE_EAST_ARENA);
+              PLAYER_GROUND_Y(EAST_FLOOR_ROW), GATE_EAST_ARENA);
 
     /*
      * South → Shaft: trigger must overlap *standing* on the main deck. The old rect used
@@ -448,10 +561,10 @@ static void build_room_hub(void)
         g_hub_shaft_mark = south;
         g_has_hub_shaft_mark = true;
         door_push(south, ROOM_SHAFT, (float)(MAP_WIDTH / 2 * TILE_SIZE - PLAYER_DRAW_W * 0.5f),
-                  (float)(SHAFT_TOP_ROW * TILE_SIZE) - PLAYER_DRAW_H - 0.5f, GATE_CLING);
+                  PLAYER_GROUND_Y(SHAFT_TOP_ROW), GATE_CLING);
     }
 
-    g_spawn = (Vector2){ 10.0f * (float)TILE_SIZE, (float)(fl * TILE_SIZE) - PLAYER_DRAW_H - 0.5f };
+    g_spawn = (Vector2){ 10.0f * (float)TILE_SIZE, PLAYER_GROUND_Y(fl) };
 }
 
 /*
@@ -489,21 +602,21 @@ static void build_room_east(void)
     /* Dest Y must use Hub floor row — using East fg here spawned you in empty air above Hub deck → fall / wrong doors */
     door_push((Rectangle){ 8.0f, (float)((fg - 3) * TILE_SIZE), 40.0f, (float)(5 * TILE_SIZE) },
               ROOM_HUB, 14.0f * (float)TILE_SIZE,
-              (float)(HUB_FLOOR_ROW * TILE_SIZE) - PLAYER_DRAW_H - 0.5f, GATE_NONE);
+              PLAYER_GROUND_Y(HUB_FLOOR_ROW), GATE_NONE);
 
     /* Shortcut south — must sit on the arena floor (same bug class as Hub south door if too low) */
     {
         float sx = (float)(MAP_WIDTH / 2 * TILE_SIZE);
         Rectangle sh = { sx - 64.0f, (float)((fg - 1) * TILE_SIZE) - 10.0f, 128.0f, (float)(3 * TILE_SIZE) };
         door_push(sh, ROOM_HUB, 10.0f * (float)TILE_SIZE,
-                  (float)(HUB_FLOOR_ROW * TILE_SIZE) - PLAYER_DRAW_H - 0.5f, GATE_SHORTCUT);
+                  PLAYER_GROUND_Y(HUB_FLOOR_ROW), GATE_SHORTCUT);
     }
 
     if (!g_pick_cling.collected)
         g_pick_cling.pos = (Vector2){ 10.0f * (float)TILE_SIZE + 8.0f,
                                       (float)(fg * TILE_SIZE) - 36.0f };
 
-    g_spawn = (Vector2){ 6.0f * (float)TILE_SIZE, (float)(fg * TILE_SIZE) - PLAYER_DRAW_H - 0.5f };
+    g_spawn = (Vector2){ 6.0f * (float)TILE_SIZE, PLAYER_GROUND_Y(fg) };
 }
 
 /*
@@ -545,7 +658,7 @@ static void build_room_shaft(void)
     door_push(
         (Rectangle){ (float)(cx * TILE_SIZE - 48), 20.0f, 112.0f,
                       fmaxf(40.0f, (float)(fl_top * TILE_SIZE) - PLAYER_DRAW_H - 36.0f) },
-        ROOM_HUB, (float)(10 * TILE_SIZE), (float)(fl_bot * TILE_SIZE) - PLAYER_DRAW_H - 0.5f, GATE_NONE);
+        ROOM_HUB, (float)(10 * TILE_SIZE), PLAYER_GROUND_Y(fl_bot), GATE_NONE);
 
     /*
      * Bottom exits: allow progression by going down then left OR right.
@@ -555,15 +668,15 @@ static void build_room_shaft(void)
         float by = (float)((fl_bot - 1) * TILE_SIZE) - 14.0f;
         door_push((Rectangle){ 10.0f, by, 120.0f, (float)(3 * TILE_SIZE) },
                   ROOM_HUB, 8.0f * (float)TILE_SIZE,
-                  (float)(fl_bot * TILE_SIZE) - PLAYER_DRAW_H - 0.5f, GATE_NONE);
+                  PLAYER_GROUND_Y(fl_bot), GATE_NONE);
         door_push((Rectangle){ (float)(MAP_WIDTH * TILE_SIZE) - 130.0f, by, 120.0f, (float)(3 * TILE_SIZE) },
                   ROOM_ANTECHAMBER, 3.0f * (float)TILE_SIZE,
-                  (float)(HUB_FLOOR_ROW * TILE_SIZE) - PLAYER_DRAW_H - 0.5f, GATE_DRIFT);
+                  PLAYER_GROUND_Y(HUB_FLOOR_ROW), GATE_DRIFT);
 
         float bx = (float)(cx * TILE_SIZE);
         door_push((Rectangle){ bx - 52.0f, by, 104.0f, (float)(3 * TILE_SIZE) },
                   ROOM_HUB, 12.0f * (float)TILE_SIZE,
-                  (float)(fl_bot * TILE_SIZE) - PLAYER_DRAW_H - 0.5f, GATE_NONE);
+                  PLAYER_GROUND_Y(fl_bot), GATE_NONE);
     }
 
     /*
@@ -578,7 +691,7 @@ static void build_room_shaft(void)
                                     (float)(fl_top * TILE_SIZE + 2.0f * TILE_SIZE) };
 
     g_spawn = (Vector2){ (float)(cx * TILE_SIZE - PLAYER_DRAW_W * 0.5f),
-                         (float)(fl_top * TILE_SIZE) - PLAYER_DRAW_H - 0.5f };
+                         PLAYER_GROUND_Y(fl_top) };
 }
 
 /*
@@ -606,21 +719,21 @@ static void build_room_antechamber(void)
     g_bench_zone = (Rectangle){ 26.0f * (float)TILE_SIZE, (float)((fl - 2) * TILE_SIZE),
                                 (float)(4 * TILE_SIZE), (float)(2 * TILE_SIZE) };
     g_bench_spawn = (Vector2){ g_bench_zone.x + g_bench_zone.width * 0.5f - PLAYER_DRAW_W * 0.5f,
-                               (float)(fl * TILE_SIZE) - PLAYER_DRAW_H - 0.5f };
+                               PLAYER_GROUND_Y(fl) };
 
     door_push((Rectangle){ 8.0f, (float)((fl - 3) * TILE_SIZE), 40.0f, (float)(5 * TILE_SIZE) },
               ROOM_SHAFT, 14.0f * (float)TILE_SIZE,
-              (float)((MAP_HEIGHT - 4) * TILE_SIZE) - PLAYER_DRAW_H - 0.5f, GATE_NONE);
+              PLAYER_GROUND_Y(MAP_HEIGHT - 4), GATE_NONE);
     door_push((Rectangle){ (float)((MAP_WIDTH - 1) * TILE_SIZE - 4), (float)((fl - 3) * TILE_SIZE),
                            44.0f, (float)(4 * TILE_SIZE) },
               ROOM_BELLCROWN, 4.0f * (float)TILE_SIZE,
-              (float)(HUB_FLOOR_ROW * TILE_SIZE) - PLAYER_DRAW_H - 0.5f, GATE_KEY);
+              PLAYER_GROUND_Y(HUB_FLOOR_ROW), GATE_KEY);
     door_push((Rectangle){ (float)((MAP_WIDTH - 10) * TILE_SIZE), (float)((fl - 8) * TILE_SIZE),
                            (float)(5 * TILE_SIZE), (float)(3 * TILE_SIZE) },
               ROOM_ENTRANCE, 5.0f * (float)TILE_SIZE,
-              (float)(HUB_FLOOR_ROW * TILE_SIZE) - PLAYER_DRAW_H - 0.5f, GATE_NONE);
+              PLAYER_GROUND_Y(HUB_FLOOR_ROW), GATE_NONE);
 
-    g_spawn = (Vector2){ 8.0f * (float)TILE_SIZE, (float)(fl * TILE_SIZE) - PLAYER_DRAW_H - 0.5f };
+    g_spawn = (Vector2){ 8.0f * (float)TILE_SIZE, PLAYER_GROUND_Y(fl) };
 }
 
 /*
@@ -647,16 +760,16 @@ static void build_room_bellcrown(void)
 
     door_push((Rectangle){ 8.0f, (float)((fl - 3) * TILE_SIZE), 40.0f, (float)(5 * TILE_SIZE) },
               ROOM_ANTECHAMBER, 14.0f * (float)TILE_SIZE,
-              (float)(HUB_FLOOR_ROW * TILE_SIZE) - PLAYER_DRAW_H - 0.5f, GATE_NONE);
+              PLAYER_GROUND_Y(HUB_FLOOR_ROW), GATE_NONE);
     door_push((Rectangle){ (float)((MAP_WIDTH - 1) * TILE_SIZE - 4), (float)((fl - 3) * TILE_SIZE),
                            44.0f, (float)(4 * TILE_SIZE) },
               ROOM_STILLWATER, 3.0f * (float)TILE_SIZE,
-              (float)(HUB_FLOOR_ROW * TILE_SIZE) - PLAYER_DRAW_H - 0.5f, GATE_FINAL_CLEAR);
+              PLAYER_GROUND_Y(HUB_FLOOR_ROW), GATE_FINAL_CLEAR);
     door_push((Rectangle){ 10.0f, (float)((fl - 8) * TILE_SIZE), (float)(5 * TILE_SIZE), (float)(3 * TILE_SIZE) },
               ROOM_ENTRANCE, 5.0f * (float)TILE_SIZE,
-              (float)(HUB_FLOOR_ROW * TILE_SIZE) - PLAYER_DRAW_H - 0.5f, GATE_FINAL_CLEAR);
+              PLAYER_GROUND_Y(HUB_FLOOR_ROW), GATE_FINAL_CLEAR);
 
-    g_spawn = (Vector2){ 5.0f * (float)TILE_SIZE, (float)(fl * TILE_SIZE) - PLAYER_DRAW_H - 0.5f };
+    g_spawn = (Vector2){ 5.0f * (float)TILE_SIZE, PLAYER_GROUND_Y(fl) };
 }
 
 /*
@@ -680,13 +793,13 @@ static void build_room_stillwater(void)
 
     door_push((Rectangle){ 8.0f, (float)((fl - 3) * TILE_SIZE), 40.0f, (float)(5 * TILE_SIZE) },
               ROOM_BELLCROWN, 14.0f * (float)TILE_SIZE,
-              (float)(HUB_FLOOR_ROW * TILE_SIZE) - PLAYER_DRAW_H - 0.5f, GATE_NONE);
+              PLAYER_GROUND_Y(HUB_FLOOR_ROW), GATE_NONE);
     door_push((Rectangle){ (float)((MAP_WIDTH - 1) * TILE_SIZE - 4), (float)((fl - 3) * TILE_SIZE),
                            44.0f, (float)(4 * TILE_SIZE) },
               ROOM_ENTRANCE, 4.0f * (float)TILE_SIZE,
-              (float)(HUB_FLOOR_ROW * TILE_SIZE) - PLAYER_DRAW_H - 0.5f, GATE_NONE);
+              PLAYER_GROUND_Y(HUB_FLOOR_ROW), GATE_NONE);
 
-    g_spawn = (Vector2){ 6.0f * (float)TILE_SIZE, (float)(fl * TILE_SIZE) - PLAYER_DRAW_H - 0.5f };
+    g_spawn = (Vector2){ 6.0f * (float)TILE_SIZE, PLAYER_GROUND_Y(fl) };
 }
 
 static void latch_doors_from_player(Player *p)
@@ -731,6 +844,7 @@ static void tick_fade(Player *p, DummyEnemy *enemy, float dt)
             g_room_seen[(int)g_room] = true;
             build_room(g_room);
             p->position = (Vector2){ g_pending_px, g_pending_py };
+            snap_player_to_ground(p);
             p->velocity = (Vector2){ 0.0f, 0.0f };
             p->on_ground = false;
             p->coyote_timer = 0.0f;
@@ -793,6 +907,39 @@ static bool tile_solid(int tx, int ty)
     return level_map[ty][tx] == 1;
 }
 
+static bool rect_overlaps_solid(Rectangle r)
+{
+    int tx0 = (int)floorf(r.x / (float)TILE_SIZE);
+    int tx1 = (int)floorf((r.x + r.width - 0.001f) / (float)TILE_SIZE);
+    int ty0 = (int)floorf(r.y / (float)TILE_SIZE);
+    int ty1 = (int)floorf((r.y + r.height - 0.001f) / (float)TILE_SIZE);
+    for (int ty = ty0; ty <= ty1; ty++) {
+        for (int tx = tx0; tx <= tx1; tx++) {
+            if (tile_solid(tx, ty)) return true;
+        }
+    }
+    return false;
+}
+
+static void snap_rect_to_ground(Rectangle *r, int max_steps)
+{
+    for (int i = 0; i < max_steps && rect_overlaps_solid(*r); i++)
+        r->y -= 1.0f;
+    for (int i = 0; i < max_steps; i++) {
+        Rectangle probe = *r;
+        probe.y += 1.0f;
+        if (rect_overlaps_solid(probe)) break;
+        r->y += 1.0f;
+    }
+}
+
+static void snap_player_to_ground(Player *p)
+{
+    Rectangle body = player_collider(p->position);
+    snap_rect_to_ground(&body, TILE_SIZE * 3);
+    p->position.y = body.y - HITBOX_PAD;
+}
+
 static Rectangle player_collider(Vector2 pos)
 {
     float w = PLAYER_DRAW_W - HITBOX_PAD * 2.0f;
@@ -851,6 +998,605 @@ static void resolve_axis_y(Rectangle *body, float prev_y, float *vel_y, bool *on
     }
 }
 
+static const char *action_name(ControlAction action)
+{
+    switch (action) {
+        case ACTION_MOVE_LEFT: return "Move left";
+        case ACTION_MOVE_RIGHT: return "Move right";
+        case ACTION_RUN: return "Sprint";
+        case ACTION_JUMP: return "Jump";
+        case ACTION_ATTACK: return "Attack";
+        case ACTION_INTERACT: return "Interact";
+        case ACTION_MAP: return "Map";
+        default: return "Action";
+    }
+}
+
+static void set_default_bindings(ControlBindings *bindings)
+{
+    bindings->key[ACTION_MOVE_LEFT] = KEY_A;
+    bindings->key[ACTION_MOVE_RIGHT] = KEY_D;
+    bindings->key[ACTION_RUN] = KEY_LEFT_SHIFT;
+    bindings->key[ACTION_JUMP] = KEY_SPACE;
+    bindings->key[ACTION_ATTACK] = KEY_J;
+    bindings->key[ACTION_INTERACT] = KEY_E;
+    bindings->key[ACTION_MAP] = KEY_M;
+}
+
+static void clamp_settings(AccessibilitySettings *settings)
+{
+    if (settings->master_volume < 0.0f) settings->master_volume = 0.0f;
+    if (settings->master_volume > 1.0f) settings->master_volume = 1.0f;
+    if (settings->music_volume < 0.0f) settings->music_volume = 0.0f;
+    if (settings->music_volume > 1.0f) settings->music_volume = 1.0f;
+    if (settings->sfx_volume < 0.0f) settings->sfx_volume = 0.0f;
+    if (settings->sfx_volume > 1.0f) settings->sfx_volume = 1.0f;
+}
+
+static bool load_user_settings(ControlBindings *bindings, AccessibilitySettings *settings)
+{
+    FILE *f = fopen(SETTINGS_FILE_NAME, "rb");
+    if (!f) return false;
+
+    char line[128];
+    while (fgets(line, sizeof line, f) != NULL) {
+        float fv = 0.0f;
+        int iv = 0;
+        if (sscanf(line, "master=%f", &fv) == 1) settings->master_volume = fv;
+        else if (sscanf(line, "music=%f", &fv) == 1) settings->music_volume = fv;
+        else if (sscanf(line, "sfx=%f", &fv) == 1) settings->sfx_volume = fv;
+        else if (sscanf(line, "screenshake=%d", &iv) == 1) settings->screenshake = (iv != 0);
+        else {
+            for (int i = 0; i < ACTION_COUNT; i++) {
+                char key_name[20];
+                snprintf(key_name, sizeof key_name, "key%d=%%d", i);
+                if (sscanf(line, key_name, &iv) == 1) {
+                    if (iv > 0 && iv < 700) bindings->key[i] = iv;
+                    break;
+                }
+            }
+        }
+    }
+    fclose(f);
+    clamp_settings(settings);
+    return true;
+}
+
+static bool save_user_settings(const ControlBindings *bindings, const AccessibilitySettings *settings)
+{
+    FILE *f = fopen(SETTINGS_FILE_NAME, "wb");
+    if (!f) return false;
+    fprintf(f, "version=1\n");
+    fprintf(f, "master=%.3f\n", settings->master_volume);
+    fprintf(f, "music=%.3f\n", settings->music_volume);
+    fprintf(f, "sfx=%.3f\n", settings->sfx_volume);
+    fprintf(f, "screenshake=%d\n", settings->screenshake ? 1 : 0);
+    for (int i = 0; i < ACTION_COUNT; i++)
+        fprintf(f, "key%d=%d\n", i, bindings->key[i]);
+    fclose(f);
+    return true;
+}
+
+static const char *key_label(int keycode)
+{
+    switch (keycode) {
+        case KEY_A: return "A";
+        case KEY_D: return "D";
+        case KEY_W: return "W";
+        case KEY_S: return "S";
+        case KEY_E: return "E";
+        case KEY_J: return "J";
+        case KEY_K: return "K";
+        case KEY_M: return "M";
+        case KEY_SPACE: return "Space";
+        case KEY_TAB: return "Tab";
+        case KEY_ENTER: return "Enter";
+        case KEY_ESCAPE: return "Esc";
+        case KEY_LEFT_SHIFT: return "LShift";
+        case KEY_RIGHT_SHIFT: return "RShift";
+        case KEY_LEFT: return "Left";
+        case KEY_RIGHT: return "Right";
+        case KEY_UP: return "Up";
+        case KEY_DOWN: return "Down";
+        default: break;
+    }
+    return TextFormat("Key %d", keycode);
+}
+
+static int pick_jump_frame(const Player *p, int jump_frame_count)
+{
+    if (jump_frame_count <= 1) return 0;
+    if (p->velocity.y < -110.0f) return 0;
+    if (p->velocity.y < 95.0f) return jump_frame_count >= 3 ? 1 : 0;
+    return jump_frame_count - 1;
+}
+
+static bool load_texture_candidate(Texture2D *out, const char *filename, bool mobile_build)
+{
+    char path[220];
+    if (mobile_build) {
+        *out = LoadTexture(filename);
+        if (out->width > 0) return true;
+        if (snprintf(path, sizeof path, "assets/%s", filename) > 0) {
+            *out = LoadTexture(path);
+            if (out->width > 0) return true;
+        }
+    }
+    if (snprintf(path, sizeof path, "assets/%s", filename) > 0 && FileExists(path)) {
+        *out = LoadTexture(path);
+        if (out->width > 0) return true;
+    }
+    if (FileExists(filename)) {
+        *out = LoadTexture(filename);
+        if (out->width > 0) return true;
+    }
+    return false;
+}
+
+static bool load_image_candidate(Image *out, const char *filename, bool mobile_build)
+{
+    char path[220];
+    if (mobile_build) {
+        if (FileExists(filename)) {
+            *out = LoadImage(filename);
+            if (out->data != NULL) return true;
+        }
+        if (snprintf(path, sizeof path, "assets/%s", filename) > 0 && FileExists(path)) {
+            *out = LoadImage(path);
+            if (out->data != NULL) return true;
+        }
+    }
+    if (snprintf(path, sizeof path, "assets/%s", filename) > 0 && FileExists(path)) {
+        *out = LoadImage(path);
+        if (out->data != NULL) return true;
+    }
+    if (FileExists(filename)) {
+        *out = LoadImage(filename);
+        if (out->data != NULL) return true;
+    }
+    return false;
+}
+
+static Rectangle opaque_bounds_from_image(Image img)
+{
+    int min_x = img.width;
+    int min_y = img.height;
+    int max_x = -1;
+    int max_y = -1;
+    Color *px = LoadImageColors(img);
+    if (px == NULL) return (Rectangle){ 0.0f, 0.0f, (float)img.width, (float)img.height };
+    for (int y = 0; y < img.height; y++) {
+        for (int x = 0; x < img.width; x++) {
+            Color c = px[y * img.width + x];
+            if (c.a < 8) continue;
+            if (x < min_x) min_x = x;
+            if (y < min_y) min_y = y;
+            if (x > max_x) max_x = x;
+            if (y > max_y) max_y = y;
+        }
+    }
+    UnloadImageColors(px);
+    if (max_x < min_x || max_y < min_y)
+        return (Rectangle){ 0.0f, 0.0f, (float)img.width, (float)img.height };
+    return (Rectangle){
+        (float)min_x,
+        (float)min_y,
+        (float)(max_x - min_x + 1),
+        (float)(max_y - min_y + 1)
+    };
+}
+
+static int load_jump_sequence(JumpFrameAsset *frames, int max_frames, bool mobile_build)
+{
+    int loaded = 0;
+    for (int i = 0; i < max_frames; i++) {
+        char name[120];
+        Texture2D tex = (Texture2D){0};
+        snprintf(name, sizeof name, "hero-jump/jump_%03d.png", i);
+        if (!load_texture_candidate(&tex, name, mobile_build)) {
+            snprintf(name, sizeof name, "hero-jump/frame_%03d.png", i);
+            if (!load_texture_candidate(&tex, name, mobile_build))
+                break;
+        }
+        frames[loaded].tex = tex;
+        frames[loaded].src = (Rectangle){ 0.0f, 0.0f, (float)tex.width, (float)tex.height };
+        {
+            Image img = {0};
+            if (load_image_candidate(&img, name, mobile_build)) {
+                frames[loaded].src = opaque_bounds_from_image(img);
+                UnloadImage(img);
+            }
+        }
+        loaded++;
+    }
+    return loaded;
+}
+
+static void spawn_hit_burst(Vector2 pos, Color color, int count, float speed_min, float speed_max)
+{
+    for (int i = 0; i < MAX_FX_PARTICLES && count > 0; i++) {
+        if (g_particles[i].active) continue;
+        float ang = ((float)GetRandomValue(0, 628)) / 100.0f;
+        float spd = speed_min + ((float)GetRandomValue(0, 1000) / 1000.0f) * (speed_max - speed_min);
+        g_particles[i].active = true;
+        g_particles[i].pos = pos;
+        g_particles[i].vel = (Vector2){ cosf(ang) * spd, sinf(ang) * spd - 40.0f };
+        g_particles[i].life = 0.32f;
+        g_particles[i].max_life = 0.32f;
+        g_particles[i].size = 2.0f + ((float)GetRandomValue(0, 150) / 100.0f);
+        g_particles[i].color = color;
+        count--;
+    }
+}
+
+static void spawn_land_dust(Vector2 feet, int facing)
+{
+    for (int i = 0; i < MAX_FX_PARTICLES; i++) {
+        if (g_particles[i].active) continue;
+        float spread = (float)GetRandomValue(-60, 60);
+        g_particles[i].active = true;
+        g_particles[i].pos = (Vector2){ feet.x + spread * 0.35f, feet.y - 2.0f };
+        g_particles[i].vel = (Vector2){ (float)facing * (40.0f + fabsf(spread) * 0.25f), -90.0f - (float)GetRandomValue(0, 65) };
+        g_particles[i].life = 0.24f;
+        g_particles[i].max_life = 0.24f;
+        g_particles[i].size = 2.8f;
+        g_particles[i].color = (Color){ 190, 185, 170, 240 };
+        if ((i % 4) == 3) break;
+    }
+}
+
+static void tick_particles(float dt)
+{
+    for (int i = 0; i < MAX_FX_PARTICLES; i++) {
+        FxParticle *p = &g_particles[i];
+        if (!p->active) continue;
+        p->life -= dt;
+        if (p->life <= 0.0f) {
+            p->active = false;
+            continue;
+        }
+        p->vel.y += 500.0f * dt;
+        p->pos.x += p->vel.x * dt;
+        p->pos.y += p->vel.y * dt;
+    }
+}
+
+static void draw_particles_world(void)
+{
+    for (int i = 0; i < MAX_FX_PARTICLES; i++) {
+        const FxParticle *p = &g_particles[i];
+        if (!p->active || p->max_life <= 0.0f) continue;
+        float t = p->life / p->max_life;
+        unsigned char a = (unsigned char)(255.0f * t);
+        Color c = p->color;
+        c.a = a;
+        DrawCircleV(p->pos, p->size * (0.7f + 0.3f * t), c);
+    }
+}
+
+static void add_camera_shake(float amount)
+{
+    g_camera_shake += amount;
+    if (g_camera_shake > 10.0f) g_camera_shake = 10.0f;
+}
+
+static Sound make_tone(float hz, float seconds)
+{
+    const int sample_rate = 22050;
+    int sample_count = (int)(seconds * (float)sample_rate);
+    if (sample_count < 16) sample_count = 16;
+    short *samples = (short *)MemAlloc(sizeof(short) * (size_t)sample_count);
+    for (int i = 0; i < sample_count; i++) {
+        float t = (float)i / (float)sample_rate;
+        float amp = sinf(2.0f * PI * hz * t);
+        samples[i] = (short)(amp * 25000.0f);
+    }
+    Wave wave = {0};
+    wave.frameCount = (unsigned int)sample_count;
+    wave.sampleRate = sample_rate;
+    wave.sampleSize = 16;
+    wave.channels = 1;
+    wave.data = samples;
+    Sound snd = LoadSoundFromWave(wave);
+    MemFree(samples);
+    return snd;
+}
+
+static Sound make_jump_swoosh(float seconds)
+{
+    const int sample_rate = 22050;
+    int sample_count = (int)(seconds * (float)sample_rate);
+    if (sample_count < 64) sample_count = 64;
+
+    short *samples = (short *)MemAlloc(sizeof(short) * (size_t)sample_count);
+    float phase = 0.0f;
+    const float base_hz = 260.0f;
+    const float end_hz = 520.0f;
+
+    for (int i = 0; i < sample_count; i++) {
+        float t = (float)i / (float)(sample_count - 1);
+        float hz = base_hz + (end_hz - base_hz) * t;
+        float phase_step = 2.0f * PI * hz / (float)sample_rate;
+        phase += phase_step;
+
+        float attack = fminf(1.0f, t / 0.06f);
+        float decay = expf(-3.8f * t);
+        float env = attack * decay;
+
+        float tone = sinf(phase) * 0.72f + sinf(phase * 2.02f) * 0.18f;
+        float breath = ((float)GetRandomValue(-1000, 1000) / 1000.0f) * 0.12f;
+        float sample = (tone + breath) * env;
+        if (sample > 1.0f) sample = 1.0f;
+        if (sample < -1.0f) sample = -1.0f;
+        samples[i] = (short)(sample * 22000.0f);
+    }
+
+    Wave wave = {0};
+    wave.frameCount = (unsigned int)sample_count;
+    wave.sampleRate = sample_rate;
+    wave.sampleSize = 16;
+    wave.channels = 1;
+    wave.data = samples;
+    Sound snd = LoadSoundFromWave(wave);
+    MemFree(samples);
+    return snd;
+}
+
+static Sound make_attack_whoosh(float seconds)
+{
+    const int sample_rate = 22050;
+    int sample_count = (int)(seconds * (float)sample_rate);
+    if (sample_count < 64) sample_count = 64;
+
+    short *samples = (short *)MemAlloc(sizeof(short) * (size_t)sample_count);
+    float phase = 0.0f;
+    float lp = 0.0f;
+    const float start_hz = 900.0f;
+    const float end_hz = 280.0f;
+
+    for (int i = 0; i < sample_count; i++) {
+        float t = (float)i / (float)(sample_count - 1);
+        float hz = start_hz + (end_hz - start_hz) * t;
+        phase += 2.0f * PI * hz / (float)sample_rate;
+
+        float attack = fminf(1.0f, t / 0.03f);
+        float decay = expf(-4.6f * t);
+        float env = attack * decay;
+
+        float noise = ((float)GetRandomValue(-1000, 1000) / 1000.0f);
+        lp += (noise - lp) * 0.24f;
+        float hp = noise - lp;
+        float tone = sinf(phase) * 0.42f;
+        float sample = (hp * 0.70f + tone) * env;
+        if (sample > 1.0f) sample = 1.0f;
+        if (sample < -1.0f) sample = -1.0f;
+        samples[i] = (short)(sample * 23000.0f);
+    }
+
+    Wave wave = {0};
+    wave.frameCount = (unsigned int)sample_count;
+    wave.sampleRate = sample_rate;
+    wave.sampleSize = 16;
+    wave.channels = 1;
+    wave.data = samples;
+    Sound snd = LoadSoundFromWave(wave);
+    MemFree(samples);
+    return snd;
+}
+
+static Sound make_attack_hit(float seconds)
+{
+    const int sample_rate = 22050;
+    int sample_count = (int)(seconds * (float)sample_rate);
+    if (sample_count < 64) sample_count = 64;
+
+    short *samples = (short *)MemAlloc(sizeof(short) * (size_t)sample_count);
+    float phase_low = 0.0f;
+    float phase_high = 0.0f;
+
+    for (int i = 0; i < sample_count; i++) {
+        float t = (float)i / (float)(sample_count - 1);
+        float low_hz = 160.0f + 40.0f * (1.0f - t);
+        float high_hz = 980.0f - 420.0f * t;
+        phase_low += 2.0f * PI * low_hz / (float)sample_rate;
+        phase_high += 2.0f * PI * high_hz / (float)sample_rate;
+
+        float body_env = expf(-8.0f * t);
+        float ring_env = expf(-18.0f * t);
+        float click = (t < 0.04f) ? (1.0f - t / 0.04f) : 0.0f;
+        float noise = ((float)GetRandomValue(-1000, 1000) / 1000.0f) * 0.18f;
+
+        float sample = sinf(phase_low) * 0.58f * body_env
+                     + sinf(phase_high) * 0.26f * ring_env
+                     + click * 0.42f
+                     + noise * ring_env;
+        if (sample > 1.0f) sample = 1.0f;
+        if (sample < -1.0f) sample = -1.0f;
+        samples[i] = (short)(sample * 23000.0f);
+    }
+
+    Wave wave = {0};
+    wave.frameCount = (unsigned int)sample_count;
+    wave.sampleRate = sample_rate;
+    wave.sampleSize = 16;
+    wave.channels = 1;
+    wave.data = samples;
+    Sound snd = LoadSoundFromWave(wave);
+    MemFree(samples);
+    return snd;
+}
+
+static bool load_sound_from_candidates(Sound *out, const char *const *names, int count)
+{
+    char path[256];
+    for (int i = 0; i < count; i++) {
+        const char *name = names[i];
+        int n = snprintf(path, sizeof path, "assets/audio/%s", name);
+        if (n > 0 && n < (int)sizeof path && FileExists(path)) {
+            *out = LoadSound(path);
+            return true;
+        }
+        n = snprintf(path, sizeof path, "assets/%s", name);
+        if (n > 0 && n < (int)sizeof path && FileExists(path)) {
+            *out = LoadSound(path);
+            return true;
+        }
+        if (FileExists(name)) {
+            *out = LoadSound(name);
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool load_music_from_candidates(Music *out, const char *const *names, int count)
+{
+    char path[256];
+    for (int i = 0; i < count; i++) {
+        const char *name = names[i];
+        int n = snprintf(path, sizeof path, "assets/audio/%s", name);
+        if (n > 0 && n < (int)sizeof path && FileExists(path)) {
+            *out = LoadMusicStream(path);
+            return true;
+        }
+        n = snprintf(path, sizeof path, "assets/%s", name);
+        if (n > 0 && n < (int)sizeof path && FileExists(path)) {
+            *out = LoadMusicStream(path);
+            return true;
+        }
+        if (FileExists(name)) {
+            *out = LoadMusicStream(name);
+            return true;
+        }
+    }
+    return false;
+}
+
+static void init_audio_bank(void)
+{
+    static const char *k_bgm_candidates[] = {
+        "audio-I-have-a-indie-medieval-fantasy-rpg-game-I-want-ma.mp3",
+        "bgm-main.mp3",
+        "bgm-main.ogg",
+        "music-main.mp3",
+        "music-main.ogg",
+    };
+    static const char *k_jump_candidates[] = {
+        "jump.wav",
+        "jump.ogg",
+        "hero-jump.wav",
+        "hero-jump.ogg",
+    };
+    static const char *k_footstep_candidates[] = {
+        "footstep.wav",
+        "footstep.ogg",
+        "player-footstep.wav",
+        "step.wav",
+    };
+    static const char *k_attack_whiff_candidates[] = {
+        "attack-whiff.wav",
+        "attack-swing.wav",
+        "sword-swing.wav",
+    };
+    static const char *k_attack_hit_candidates[] = {
+        "attack-hit.wav",
+        "sword-hit.wav",
+        "blade-hit.wav",
+    };
+
+    InitAudioDevice();
+    g_bgm_loaded = load_music_from_candidates(&g_bgm, k_bgm_candidates, (int)(sizeof(k_bgm_candidates) / sizeof(k_bgm_candidates[0])));
+    if (g_bgm_loaded) {
+        PlayMusicStream(g_bgm);
+    }
+    if (!load_sound_from_candidates(&g_sfx_jump, k_jump_candidates, (int)(sizeof(k_jump_candidates) / sizeof(k_jump_candidates[0])))) {
+        g_sfx_jump = make_jump_swoosh(0.13f);
+    }
+    if (!load_sound_from_candidates(&g_sfx_footstep, k_footstep_candidates, (int)(sizeof(k_footstep_candidates) / sizeof(k_footstep_candidates[0])))) {
+        g_sfx_footstep = make_tone(92.0f, 0.028f);
+    }
+    g_sfx_land = make_tone(180.0f, 0.09f);
+    g_sfx_hurt = make_tone(220.0f, 0.12f);
+    g_sfx_death = make_tone(140.0f, 0.18f);
+    if (!load_sound_from_candidates(&g_sfx_attack_whiff, k_attack_whiff_candidates, (int)(sizeof(k_attack_whiff_candidates) / sizeof(k_attack_whiff_candidates[0])))) {
+        g_sfx_attack_whiff = make_attack_whoosh(0.12f);
+    }
+    if (!load_sound_from_candidates(&g_sfx_attack_hit, k_attack_hit_candidates, (int)(sizeof(k_attack_hit_candidates) / sizeof(k_attack_hit_candidates[0])))) {
+        g_sfx_attack_hit = make_attack_hit(0.11f);
+    }
+    g_sfx_telegraph = make_tone(310.0f, 0.09f);
+    g_sfx_bench = make_tone(260.0f, 0.15f);
+    g_sfx_ui_confirm = make_tone(720.0f, 0.06f);
+    g_sfx_ui_cancel = make_tone(240.0f, 0.07f);
+    g_sfx_pickup = make_tone(880.0f, 0.05f);
+    g_sfx_zone_calm = make_tone(190.0f, 0.24f);
+    g_sfx_zone_combat = make_tone(280.0f, 0.22f);
+    g_audio_ready = true;
+}
+
+static void update_background_music(const AccessibilitySettings *settings)
+{
+    if (!g_audio_ready || !g_bgm_loaded) return;
+
+    SetMusicVolume(g_bgm, settings->master_volume * settings->music_volume * BGM_BASE_GAIN);
+    UpdateMusicStream(g_bgm);
+
+    float len = GetMusicTimeLength(g_bgm);
+    if (len > 0.0f) {
+        float played = GetMusicTimePlayed(g_bgm);
+        if (played >= len - 0.01f) {
+            SeekMusicStream(g_bgm, 0.0f);
+        }
+    }
+    if (!IsMusicStreamPlaying(g_bgm)) {
+        PlayMusicStream(g_bgm);
+    }
+}
+
+static void play_sfx(Sound snd, const AccessibilitySettings *settings, float local_gain)
+{
+    if (!g_audio_ready) return;
+    SetSoundVolume(snd, settings->master_volume * settings->sfx_volume * local_gain);
+    PlaySound(snd);
+}
+
+static void play_music_pulse(Sound snd, const AccessibilitySettings *settings, float local_gain)
+{
+    if (!g_audio_ready) return;
+    SetSoundVolume(snd, settings->master_volume * settings->music_volume * local_gain);
+    PlaySound(snd);
+}
+
+static void update_audio_layering(bool in_combat, RoomId room, const AccessibilitySettings *settings, float dt)
+{
+    if (g_bgm_loaded) {
+        g_was_in_combat = in_combat;
+        return;
+    }
+
+    float room_tension = 0.0f;
+    switch (room) {
+        case ROOM_ENTRANCE: room_tension = 0.20f; break;
+        case ROOM_HUB: room_tension = 0.26f; break;
+        case ROOM_SHAFT: room_tension = 0.34f; break;
+        case ROOM_EAST: room_tension = 0.52f; break;
+        case ROOM_ANTECHAMBER: room_tension = 0.44f; break;
+        case ROOM_BELLCROWN: room_tension = 0.60f; break;
+        case ROOM_STILLWATER: room_tension = 0.15f; break;
+        default: room_tension = 0.25f; break;
+    }
+    g_music_pulse_timer -= dt;
+    if (g_music_pulse_timer <= 0.0f) {
+        bool tense = in_combat || room_tension >= 0.5f;
+        play_music_pulse(tense ? g_sfx_zone_combat : g_sfx_zone_calm, settings, tense ? 0.28f : 0.22f);
+        g_music_pulse_timer = tense ? 0.95f : 1.35f;
+    }
+    if (in_combat && !g_was_in_combat) {
+        play_music_pulse(g_sfx_zone_combat, settings, 0.36f);
+    }
+    g_was_in_combat = in_combat;
+}
+
 static bool point_in_rect(Vector2 p, Rectangle r)
 {
     return p.x >= r.x && p.x <= (r.x + r.width) && p.y >= r.y && p.y <= (r.y + r.height);
@@ -901,20 +1647,27 @@ static void layout_touch_controls(TouchUi *touch_ui, int screen_w, int screen_h)
     }
 }
 
-static void gather_input(InputState *in, TouchUi *touch_ui, int screen_w, int screen_h)
+static void gather_input(InputState *in, const ControlBindings *bindings, TouchUi *touch_ui, int screen_w, int screen_h)
 {
     memset(in, 0, sizeof *in);
 
-    if (IsKeyDown(KEY_A) || IsKeyDown(KEY_LEFT)) in->move_x -= 1.0f;
-    if (IsKeyDown(KEY_D) || IsKeyDown(KEY_RIGHT)) in->move_x += 1.0f;
-    in->run_held = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
-    in->jump_pressed = IsKeyPressed(KEY_SPACE) || IsKeyPressed(KEY_W) || IsKeyPressed(KEY_UP);
-    in->jump_released = IsKeyReleased(KEY_SPACE) || IsKeyReleased(KEY_W) || IsKeyReleased(KEY_UP);
-    in->attack_pressed = IsKeyPressed(KEY_J) || IsKeyPressed(KEY_K);
-    in->interact_pressed = IsKeyPressed(KEY_E);
+    if (IsKeyDown(bindings->key[ACTION_MOVE_LEFT]) || IsKeyDown(KEY_LEFT)) in->move_x -= 1.0f;
+    if (IsKeyDown(bindings->key[ACTION_MOVE_RIGHT]) || IsKeyDown(KEY_RIGHT)) in->move_x += 1.0f;
+    in->run_held = IsKeyDown(bindings->key[ACTION_RUN]) || IsKeyDown(KEY_RIGHT_SHIFT);
+    in->jump_pressed = IsKeyPressed(bindings->key[ACTION_JUMP]) || IsKeyPressed(KEY_W) || IsKeyPressed(KEY_UP);
+    in->jump_released = IsKeyReleased(bindings->key[ACTION_JUMP]) || IsKeyReleased(KEY_W) || IsKeyReleased(KEY_UP);
+    in->attack_pressed = IsKeyPressed(bindings->key[ACTION_ATTACK]) || IsKeyPressed(KEY_K);
+    in->interact_pressed = IsKeyPressed(bindings->key[ACTION_INTERACT]);
     in->reset_pressed = IsKeyPressed(KEY_R);
     in->toggle_debug_pressed = IsKeyPressed(KEY_F1);
-    in->toggle_map_pressed = IsKeyPressed(KEY_M);
+    in->toggle_map_pressed = IsKeyPressed(bindings->key[ACTION_MAP]);
+    in->options_pressed = IsKeyPressed(KEY_TAB) || IsKeyPressed(KEY_O);
+    in->menu_up_pressed = IsKeyPressed(KEY_UP) || IsKeyPressed(KEY_W);
+    in->menu_down_pressed = IsKeyPressed(KEY_DOWN) || IsKeyPressed(KEY_S);
+    in->menu_left_pressed = IsKeyPressed(KEY_LEFT) || IsKeyPressed(KEY_A);
+    in->menu_right_pressed = IsKeyPressed(KEY_RIGHT) || IsKeyPressed(KEY_D);
+    in->menu_confirm_pressed = IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_SPACE);
+    in->menu_cancel_pressed = IsKeyPressed(KEY_ESCAPE) || IsKeyPressed(KEY_BACKSPACE);
 
     if (MOBILE_BUILD || GetTouchPointCount() > 0) {
         bool left_down;
@@ -1015,6 +1768,7 @@ static void physics_player(Player *p, const InputState *in, float dt)
             p->on_ground = false;
             p->coyote_timer = 0.0f;
             p->jump_buffer_timer = 0.0f;
+            play_sfx(g_sfx_jump, &g_settings, 0.50f);
         }
 
         if (in->jump_released && p->velocity.y < 0.0f)
@@ -1024,6 +1778,7 @@ static void physics_player(Player *p, const InputState *in, float dt)
             p->state = PLAYER_ATTACKING;
             p->state_timer = ATTACK_DURATION;
             p->attack_cd_timer = ATTACK_DURATION + ATTACK_COOLDOWN;
+            play_sfx(g_sfx_attack_whiff, &g_settings, 0.42f);
         }
     }
 
@@ -1061,7 +1816,7 @@ static void physics_player(Player *p, const InputState *in, float dt)
      * lower deck instead of letting them drop into kill-line respawns.
      */
     if (g_room == ROOM_SHAFT) {
-        const float deck_y = (float)((MAP_HEIGHT - 4) * TILE_SIZE) - PLAYER_DRAW_H - 0.5f;
+        const float deck_y = PLAYER_GROUND_Y(MAP_HEIGHT - 4);
         if (p->position.y > deck_y) {
             p->position.y = deck_y;
             if (p->velocity.y > 0.0f) p->velocity.y = 0.0f;
@@ -1151,11 +1906,11 @@ static void init_lore_nodes(void)
 
 static const char *current_objective_text(void)
 {
-    if (!g_has_cathedral_key) return "Objective: gather shards, then buy Cathedral Key at a bench";
-    if (!g_dummy_defeated) return "Objective: defeat Cantor in East arena";
-    if (!g_has_chord_cling) return "Objective: collect Chord Cling in East arena";
-    if (!g_has_map) return "Objective: buy Choir Chart at a bench (2 shards)";
-    if (!g_high_cantor_defeated) return "Objective: reach Bellcrown and defeat High Cantor";
+    if (!g_has_cathedral_key) return "Objective: gather shards in Entrance/Hub, then bench-buy Cathedral Key";
+    if (!g_dummy_defeated) return "Objective: from Hub, take east door and defeat Cantor";
+    if (!g_has_chord_cling) return "Objective: claim Chord Cling in East before leaving";
+    if (!g_has_map) return "Objective: from Hub go south to Shaft, then bench-buy Choir Chart";
+    if (!g_high_cantor_defeated) return "Objective: from Shaft drift-gate right to Bellcrown and win";
     if (g_nail_tier < 3) return "Optional: temper your nail to tier III at benches";
     if (!g_health_shard_found) return "Optional: find the hidden Health Shard branch";
     if (g_room != ROOM_STILLWATER) return "Objective: proceed to Stillwater";
@@ -1172,6 +1927,7 @@ static void try_respawn_fall(Player *p)
     if (feet <= kill_line) return;
 
     p->position = g_spawn;
+    snap_player_to_ground(p);
     p->velocity = (Vector2){ 0.0f, 0.0f };
     p->on_ground = false;
     p->coyote_timer = 0.0f;
@@ -1202,6 +1958,7 @@ static void try_hazard_veil(Player *p)
     if (!p->on_ground) return;
 
     p->position = g_spawn;
+    snap_player_to_ground(p);
     p->velocity = (Vector2){ 0.0f, 0.0f };
     p->on_ground = false;
     p->coyote_timer = 0.0f;
@@ -1229,18 +1986,24 @@ static void try_pickups(Player *p)
         g_pick_key.collected = true;
         g_choir_shards += 3;
         push_toast("Found shard cache (+3)", 1.8f);
+        spawn_hit_burst(g_pick_key.pos, (Color){ 222, 198, 130, 250 }, 12, 90.0f, 180.0f);
+        play_sfx(g_sfx_pickup, &g_settings, 0.48f);
     }
     if (!g_pick_cling.collected && g_room == ROOM_EAST &&
         v2dist(c, g_pick_cling.pos) < PICKUP_RADIUS) {
         g_pick_cling.collected = true;
         g_has_chord_cling = true;
         push_toast("Chord Cling", 1.6f);
+        spawn_hit_burst(g_pick_cling.pos, (Color){ 120, 210, 255, 255 }, 14, 90.0f, 210.0f);
+        play_sfx(g_sfx_pickup, &g_settings, 0.56f);
     }
     if (!g_pick_map.collected && g_room == ROOM_SHAFT &&
         v2dist(c, g_pick_map.pos) < PICKUP_RADIUS) {
         g_pick_map.collected = true;
         g_choir_shards += 2;
         push_toast("Recovered old shards (+2)", 1.8f);
+        spawn_hit_burst(g_pick_map.pos, (Color){ 184, 145, 230, 250 }, 10, 90.0f, 170.0f);
+        play_sfx(g_sfx_pickup, &g_settings, 0.44f);
     }
 }
 
@@ -1253,11 +2016,14 @@ static void try_bench(Player *p, const InputState *in)
 
     g_spawn = g_bench_spawn;
     heal_player(p);
+    play_sfx(g_sfx_bench, &g_settings, 0.46f);
+    if (g_settings.screenshake) add_camera_shake(2.0f);
 
     if (!g_has_cathedral_key && g_choir_shards >= KEY_SHARD_COST) {
         g_choir_shards -= KEY_SHARD_COST;
         g_has_cathedral_key = true;
         push_toast("Bench rite complete: Cathedral Key forged", 2.1f);
+        play_sfx(g_sfx_ui_confirm, &g_settings, 0.52f);
         return;
     }
     if (!g_has_map && g_choir_shards >= MAP_SHARD_COST) {
@@ -1265,6 +2031,7 @@ static void try_bench(Player *p, const InputState *in)
         g_has_map = true;
         g_map_open = true;
         push_toast("Choir Chart purchased", 1.8f);
+        play_sfx(g_sfx_ui_confirm, &g_settings, 0.52f);
         return;
     }
     {
@@ -1273,6 +2040,7 @@ static void try_bench(Player *p, const InputState *in)
             g_choir_shards -= cost;
             g_nail_tier++;
             push_toast((g_nail_tier == 2) ? "Nail tempered to Tier II" : "Nail tempered to Tier III", 2.0f);
+            play_sfx(g_sfx_ui_confirm, &g_settings, 0.52f);
             return;
         }
     }
@@ -1301,6 +2069,8 @@ static void try_lore_interact(Player *p, const InputState *in)
                 p->max_hp += 1;
                 p->hp += 1;
                 push_toast("Relic found: Health Shard (+1 max HP)", 2.2f);
+                spawn_hit_burst(node->pos, (Color){ 138, 248, 188, 255 }, 14, 110.0f, 240.0f);
+                play_sfx(g_sfx_pickup, &g_settings, 0.60f);
                 return;
             }
         }
@@ -1315,7 +2085,7 @@ static Rectangle east_enemy_spawn(void)
     const int fg = EAST_FLOOR_ROW;
     const int perch = fg - 1;
     float ex = 28.0f * (float)TILE_SIZE + 4.0f;
-    float ey = (float)(perch * TILE_SIZE) - ENEMY_DRAW_H;
+    float ey = ENEMY_GROUND_Y(perch);
     return (Rectangle){ ex, ey, ENEMY_DRAW_W, ENEMY_DRAW_H };
 }
 
@@ -1323,7 +2093,7 @@ static Rectangle entrance_enemy_spawn(void)
 {
     const int fl = HUB_FLOOR_ROW;
     float ex = 20.0f * (float)TILE_SIZE;
-    float ey = (float)(fl * TILE_SIZE) - ENEMY_DRAW_H;
+    float ey = ENEMY_GROUND_Y(fl);
     return (Rectangle){ ex, ey, ENEMY_DRAW_W, ENEMY_DRAW_H };
 }
 
@@ -1331,7 +2101,7 @@ static Rectangle hub_enemy_spawn(void)
 {
     const int fl = HUB_FLOOR_ROW;
     float ex = 34.0f * (float)TILE_SIZE;
-    float ey = (float)(fl * TILE_SIZE) - ENEMY_DRAW_H;
+    float ey = ENEMY_GROUND_Y(fl);
     return (Rectangle){ ex, ey, ENEMY_DRAW_W, ENEMY_DRAW_H };
 }
 
@@ -1339,7 +2109,7 @@ static Rectangle shaft_enemy_spawn(void)
 {
     const int row = SHAFT_TOP_ROW + 8;
     float ex = (float)(MAP_WIDTH / 2 * TILE_SIZE) - ENEMY_DRAW_W * 0.5f;
-    float ey = (float)(row * TILE_SIZE) - ENEMY_DRAW_H;
+    float ey = ENEMY_GROUND_Y(row);
     return (Rectangle){ ex, ey, ENEMY_DRAW_W, ENEMY_DRAW_H };
 }
 
@@ -1454,6 +2224,13 @@ static void reset_run(Player *p, DummyEnemy *e, float *hitstop)
     g_toast = NULL;
     g_toast_timer = 0.0f;
     g_transition_cd = 0.0f;
+    g_camera_shake = 0.0f;
+    g_camera_shake_offset = (Vector2){ 0.0f, 0.0f };
+    g_camera_shake_target = (Vector2){ 0.0f, 0.0f };
+    g_camera_shake_jitter_timer = 0.0f;
+    g_music_pulse_timer = 0.0f;
+    g_was_in_combat = false;
+    memset(g_particles, 0, sizeof g_particles);
     memset(g_room_bounty_claimed, 0, sizeof g_room_bounty_claimed);
     init_lore_nodes();
 
@@ -1463,6 +2240,7 @@ static void reset_run(Player *p, DummyEnemy *e, float *hitstop)
     build_room(ROOM_ENTRANCE);
 
     p->position = g_spawn;
+    snap_player_to_ground(p);
     p->velocity = (Vector2){ 0.0f, 0.0f };
     p->on_ground = false;
     p->coyote_timer = 0.0f;
@@ -1506,8 +2284,12 @@ static void hurt_player_from_enemy(Player *p, const DummyEnemy *e, const char *r
     float dir = (pcx >= ecx) ? 1.0f : -1.0f;
     p->velocity.x = dir * ENEMY_TOUCH_KNOCK;
     p->velocity.y = -300.0f;
+    if (g_settings.screenshake) add_camera_shake(4.0f);
+    spawn_hit_burst((Vector2){ p->position.x + PLAYER_DRAW_W * 0.5f, p->position.y + PLAYER_DRAW_H * 0.45f },
+                    (Color){ 255, 120, 120, 240 }, 11, 110.0f, 220.0f);
     if (p->hp <= 0) {
         p->position = g_spawn;
+        snap_player_to_ground(p);
         p->velocity = (Vector2){ 0.0f, 0.0f };
         p->on_ground = false;
         p->coyote_timer = 0.0f;
@@ -1518,8 +2300,10 @@ static void hurt_player_from_enemy(Player *p, const DummyEnemy *e, const char *r
         p->iframes_timer = 0.8f;
         heal_player(p);
         push_toast("You fall - revived at the last bench", 1.9f);
+        play_sfx(g_sfx_death, &g_settings, 0.68f);
         return;
     }
+    play_sfx(g_sfx_hurt, &g_settings, 0.56f);
     push_toast(reason, 1.2f);
 }
 
@@ -1616,6 +2400,7 @@ static void update_enemy(DummyEnemy *e, Player *p, const Rectangle *attack, bool
                         e->shot_windup = 0.30f;
                         e->shot_preview_dir = (Vector2){ (float)e->dir, 0.0f };
                         e->shot_speed_mult = 1.0f;
+                        play_sfx(g_sfx_telegraph, &g_settings, 0.38f);
                     }
                 }
             }
@@ -1638,6 +2423,7 @@ static void update_enemy(DummyEnemy *e, Player *p, const Rectangle *attack, bool
                     e->shot_windup = 0.36f;
                     e->shot_preview_dir = dirn;
                     e->shot_speed_mult = 1.0f;
+                    play_sfx(g_sfx_telegraph, &g_settings, 0.46f);
                 }
             }
             break;
@@ -1660,6 +2446,7 @@ static void update_enemy(DummyEnemy *e, Player *p, const Rectangle *attack, bool
                     e->shot_windup = e->enrage_phase ? 0.26f : 0.32f;
                     e->shot_preview_dir = dirn;
                     e->shot_speed_mult = shot_mult;
+                    play_sfx(g_sfx_telegraph, &g_settings, 0.54f);
                 }
             }
             break;
@@ -1741,16 +2528,22 @@ static void update_enemy(DummyEnemy *e, Player *p, const Rectangle *attack, bool
         e->hurt_iframes = ENEMY_HURT_IFRAMES;
         e->hurt_flash = 0.12f;
         *hitstop = HITSTOP_DURATION;
+        play_sfx(g_sfx_attack_hit, &g_settings, 0.64f);
+        if (g_settings.screenshake) add_camera_shake(5.5f);
+        spawn_hit_burst((Vector2){ e->bounds.x + e->bounds.width * 0.5f, e->bounds.y + e->bounds.height * 0.42f },
+                        (Color){ 255, 210, 158, 250 }, 12, 120.0f, 245.0f);
         float knock = (enemy_center_x >= player_center_x) ? ENEMY_KNOCKBACK : -ENEMY_KNOCKBACK;
         e->bounds.x += knock * dt * 6.0f;
         if ((e->type == ENEMY_CANTOR && e->hp <= 2 && !e->enrage_phase) ||
             (e->type == ENEMY_HIGH_CANTOR && e->hp <= 3 && !e->enrage_phase)) {
             e->enrage_phase = true;
             push_toast((e->type == ENEMY_HIGH_CANTOR) ? "High Cantor phase II" : "Cantor enrages", 1.4f);
+            if (g_settings.screenshake) add_camera_shake(8.0f);
         }
         if (e->hp <= 0) {
             e->dead = true;
             e->shot_live = false;
+            if (g_settings.screenshake) add_camera_shake(9.0f);
             if (!g_room_bounty_claimed[(int)g_room]) {
                 g_room_bounty_claimed[(int)g_room] = true;
                 g_choir_shards += room_bounty(g_room);
@@ -1819,6 +2612,53 @@ static void draw_minimap(int screen_w)
     DrawText("Choir chart", ox, oy + 2 * cell + gap * 2 + 20, 16, (Color){ 170, 168, 190, 255 });
 }
 
+static void draw_options_menu(int screen_w, int screen_h, const ControlBindings *bindings,
+                              const AccessibilitySettings *settings, int selected, bool waiting_for_key)
+{
+    const int panel_w = 620;
+    const int panel_h = 500;
+    int x = (screen_w - panel_w) / 2;
+    int y = (screen_h - panel_h) / 2;
+    int rows = ACTION_COUNT + 5;
+    DrawRectangle(0, 0, screen_w, screen_h, (Color){ 0, 0, 0, 170 });
+    DrawRectangleRounded((Rectangle){ (float)x, (float)y, (float)panel_w, (float)panel_h }, 0.05f, 8, (Color){ 24, 27, 40, 250 });
+    DrawRectangleRoundedLinesEx((Rectangle){ (float)x, (float)y, (float)panel_w, (float)panel_h }, 0.05f, 8, 2.0f, (Color){ 170, 185, 220, 220 });
+    DrawText("Options - Accessibility + Controls", x + 22, y + 16, 24, (Color){ 230, 235, 255, 255 });
+    DrawText("TAB/O close  Arrows move  Enter remap/apply  Left/Right adjust", x + 22, y + 46, 16, (Color){ 168, 176, 205, 255 });
+
+    for (int i = 0; i < rows; i++) {
+        int yy = y + 84 + i * 30;
+        Color row = (i == selected) ? (Color){ 90, 120, 170, 190 } : (Color){ 40, 45, 66, 115 };
+        DrawRectangle(x + 20, yy - 3, panel_w - 40, 26, row);
+        if (i < ACTION_COUNT) {
+            DrawText(action_name((ControlAction)i), x + 30, yy, 18, (Color){ 232, 238, 255, 255 });
+            DrawText(key_label(bindings->key[i]), x + 330, yy, 18, (Color){ 206, 220, 242, 255 });
+        } else if (i == ACTION_COUNT) {
+            DrawText("Master volume", x + 30, yy, 18, (Color){ 232, 238, 255, 255 });
+            DrawText(TextFormat("%d%%", (int)(settings->master_volume * 100.0f + 0.5f)), x + 330, yy, 18, (Color){ 206, 220, 242, 255 });
+        } else if (i == ACTION_COUNT + 1) {
+            DrawText("Music volume", x + 30, yy, 18, (Color){ 232, 238, 255, 255 });
+            DrawText(TextFormat("%d%%", (int)(settings->music_volume * 100.0f + 0.5f)), x + 330, yy, 18, (Color){ 206, 220, 242, 255 });
+        } else if (i == ACTION_COUNT + 2) {
+            DrawText("SFX volume", x + 30, yy, 18, (Color){ 232, 238, 255, 255 });
+            DrawText(TextFormat("%d%%", (int)(settings->sfx_volume * 100.0f + 0.5f)), x + 330, yy, 18, (Color){ 206, 220, 242, 255 });
+        } else if (i == ACTION_COUNT + 3) {
+            DrawText("Screenshake", x + 30, yy, 18, (Color){ 232, 238, 255, 255 });
+            DrawText(settings->screenshake ? "On" : "Off", x + 330, yy, 18, (Color){ 206, 220, 242, 255 });
+        } else {
+            DrawText("Reset defaults", x + 30, yy, 18, (Color){ 232, 238, 255, 255 });
+            DrawText("Press Enter", x + 330, yy, 18, (Color){ 206, 220, 242, 255 });
+        }
+    }
+
+    if (waiting_for_key) {
+        DrawRectangle(x + 26, y + panel_h - 66, panel_w - 52, 38, (Color){ 245, 218, 130, 235 });
+        DrawText("Press any key to remap. Esc cancels.", x + 38, y + panel_h - 56, 18, (Color){ 40, 35, 18, 255 });
+    } else {
+        DrawText("Phase 5 accessibility: remaps + volume + screenshake toggle", x + 24, y + panel_h - 52, 17, (Color){ 160, 175, 210, 255 });
+    }
+}
+
 int main(void)
 {
     const int start_w = BASE_SCREEN_W;
@@ -1839,14 +2679,19 @@ int main(void)
     build_room(g_room);
 
     if (!MOBILE_BUILD) SetConfigFlags(FLAG_WINDOW_RESIZABLE);
-    InitWindow(start_w, start_h, "The Sunken Choir — Phase 4 slice");
+    InitWindow(start_w, start_h, "The Sunken Choir — Phase 5 polish slice");
+    init_audio_bank();
 
     Texture2D player_tex = {0};
     Texture2D attack_tex = {0};
+    Texture2D jump_tex = {0};
+    JumpFrameAsset jump_seq_tex[MAX_JUMP_SEQ_FRAMES] = {0};
     Texture2D tile_tex = {0};
     Texture2D enemy_tex = {0};
     bool use_player_sprite = false;
     bool use_attack_sprite = false;
+    bool use_jump_sprite = false;
+    bool use_jump_sequence = false;
     bool use_tile_sprite = false;
     bool use_enemy_sprite = false;
 
@@ -1857,6 +2702,9 @@ int main(void)
         use_attack_sprite = load_first_attack(&attack_tex, MOBILE_BUILD);
         if (use_attack_sprite)
             SetTextureFilter(attack_tex, TEXTURE_FILTER_POINT);
+        use_jump_sprite = load_first_jump(&jump_tex, MOBILE_BUILD);
+        if (use_jump_sprite)
+            SetTextureFilter(jump_tex, TEXTURE_FILTER_POINT);
 
         use_tile_sprite = load_first_tile(&tile_tex, MOBILE_BUILD);
         if (use_tile_sprite)
@@ -1873,6 +2721,10 @@ int main(void)
     int attack_frame_w = (int)PLAYER_DRAW_W;
     int attack_frame_h = (int)PLAYER_DRAW_H;
     int attack_frame_count = 1;
+    int jump_frame_w = (int)PLAYER_DRAW_W;
+    int jump_frame_h = (int)PLAYER_DRAW_H;
+    int jump_frame_count = 1;
+    int jump_seq_count = 0;
     if (use_player_sprite)
         compute_horizontal_strip(player_tex, (int)PLAYER_DRAW_W, &sprite_frame_w, &sprite_frame_h, &sprite_frame_count);
     if (use_attack_sprite) {
@@ -1885,9 +2737,18 @@ int main(void)
             use_attack_sprite = false;
         }
     }
+    if (use_jump_sprite)
+        compute_horizontal_strip(jump_tex, (int)PLAYER_DRAW_W, &jump_frame_w, &jump_frame_h, &jump_frame_count);
+    if (!MOBILE_BUILD) {
+        jump_seq_count = load_jump_sequence(jump_seq_tex, MAX_JUMP_SEQ_FRAMES, MOBILE_BUILD);
+        use_jump_sequence = jump_seq_count > 0;
+        for (int i = 0; i < jump_seq_count; i++)
+            SetTextureFilter(jump_seq_tex[i].tex, TEXTURE_FILTER_POINT);
+    }
 
     Player player = {0};
     player.position = g_spawn;
+    snap_player_to_ground(&player);
     player.facing = 1;
     player.max_hp = PLAYER_BASE_HP;
     player.hp = player.max_hp;
@@ -1906,9 +2767,17 @@ int main(void)
     bool debug_draw = false;
     TouchUi touch_ui = {0};
     InputState input = {0};
+    ControlBindings bindings = {0};
+    bool options_open = false;
+    bool options_waiting_for_key = false;
+    int options_selected = 0;
+    int options_rebind_action = -1;
+    bool options_dirty = false;
     float mobile_boot_hint = 3.0f;
     bool mobile_deferred_texture_load = MOBILE_BUILD;
     float mobile_texture_load_timer = 0.0f;
+    set_default_bindings(&bindings);
+    load_user_settings(&bindings, &g_settings);
 
     SetTargetFPS(60);
 
@@ -1936,6 +2805,15 @@ int main(void)
                         use_attack_sprite = false;
                     }
                 }
+                use_jump_sprite = load_first_jump(&jump_tex, MOBILE_BUILD);
+                if (use_jump_sprite) {
+                    SetTextureFilter(jump_tex, TEXTURE_FILTER_POINT);
+                    compute_horizontal_strip(jump_tex, (int)PLAYER_DRAW_W, &jump_frame_w, &jump_frame_h, &jump_frame_count);
+                }
+                jump_seq_count = load_jump_sequence(jump_seq_tex, MAX_JUMP_SEQ_FRAMES, MOBILE_BUILD);
+                use_jump_sequence = jump_seq_count > 0;
+                for (int i = 0; i < jump_seq_count; i++)
+                    SetTextureFilter(jump_seq_tex[i].tex, TEXTURE_FILTER_POINT);
                 use_tile_sprite = load_first_tile(&tile_tex, MOBILE_BUILD);
                 if (use_tile_sprite) SetTextureFilter(tile_tex, TEXTURE_FILTER_POINT);
                 use_enemy_sprite = load_first_enemy(&enemy_tex, MOBILE_BUILD);
@@ -1944,7 +2822,96 @@ int main(void)
             }
         }
         if (MOBILE_BUILD && mobile_boot_hint > 0.0f) mobile_boot_hint -= raw_dt;
-        gather_input(&input, &touch_ui, screen_w, screen_h);
+        gather_input(&input, &bindings, &touch_ui, screen_w, screen_h);
+
+        if (input.options_pressed) {
+            options_open = !options_open;
+            options_waiting_for_key = false;
+            options_rebind_action = -1;
+            play_sfx(options_open ? g_sfx_ui_confirm : g_sfx_ui_cancel, &g_settings, 0.36f);
+        }
+
+        if (options_open) {
+            int menu_rows = ACTION_COUNT + 5;
+            bool options_changed = false;
+            if (input.menu_up_pressed) {
+                options_selected = (options_selected + menu_rows - 1) % menu_rows;
+                play_sfx(g_sfx_ui_confirm, &g_settings, 0.24f);
+            }
+            if (input.menu_down_pressed) {
+                options_selected = (options_selected + 1) % menu_rows;
+                play_sfx(g_sfx_ui_confirm, &g_settings, 0.24f);
+            }
+            if (options_waiting_for_key && options_rebind_action >= 0 && options_rebind_action < ACTION_COUNT) {
+                int key = GetKeyPressed();
+                if (key > 0) {
+                    if (key != KEY_ESCAPE) {
+                        bindings.key[options_rebind_action] = key;
+                        play_sfx(g_sfx_ui_confirm, &g_settings, 0.40f);
+                        options_changed = true;
+                    } else {
+                        play_sfx(g_sfx_ui_cancel, &g_settings, 0.30f);
+                    }
+                    options_waiting_for_key = false;
+                    options_rebind_action = -1;
+                }
+            } else {
+                float step = 0.05f;
+                if (options_selected == ACTION_COUNT || options_selected == ACTION_COUNT + 1 || options_selected == ACTION_COUNT + 2) {
+                    float *value = (options_selected == ACTION_COUNT) ? &g_settings.master_volume
+                                  : (options_selected == ACTION_COUNT + 1) ? &g_settings.music_volume
+                                  : &g_settings.sfx_volume;
+                    if (input.menu_left_pressed) {
+                        *value -= step;
+                        if (*value < 0.0f) *value = 0.0f;
+                        play_sfx(g_sfx_ui_confirm, &g_settings, 0.26f);
+                        options_changed = true;
+                    }
+                    if (input.menu_right_pressed) {
+                        *value += step;
+                        if (*value > 1.0f) *value = 1.0f;
+                        play_sfx(g_sfx_ui_confirm, &g_settings, 0.26f);
+                        options_changed = true;
+                    }
+                } else if (options_selected == ACTION_COUNT + 3 && (input.menu_left_pressed || input.menu_right_pressed || input.menu_confirm_pressed)) {
+                    g_settings.screenshake = !g_settings.screenshake;
+                    play_sfx(g_sfx_ui_confirm, &g_settings, 0.34f);
+                    options_changed = true;
+                } else if (options_selected == ACTION_COUNT + 4 && input.menu_confirm_pressed) {
+                    set_default_bindings(&bindings);
+                    g_settings.master_volume = DEFAULT_MASTER_VOL;
+                    g_settings.music_volume = DEFAULT_MUSIC_VOL;
+                    g_settings.sfx_volume = DEFAULT_SFX_VOL;
+                    g_settings.screenshake = true;
+                    play_sfx(g_sfx_ui_confirm, &g_settings, 0.40f);
+                    options_changed = true;
+                } else if (options_selected < ACTION_COUNT && input.menu_confirm_pressed) {
+                    options_waiting_for_key = true;
+                    options_rebind_action = options_selected;
+                    play_sfx(g_sfx_ui_confirm, &g_settings, 0.26f);
+                }
+            }
+            if (options_changed) {
+                clamp_settings(&g_settings);
+                options_dirty = !save_user_settings(&bindings, &g_settings);
+            }
+            if (input.menu_cancel_pressed) {
+                if (options_waiting_for_key) {
+                    options_waiting_for_key = false;
+                    options_rebind_action = -1;
+                } else {
+                    options_open = false;
+                }
+                play_sfx(g_sfx_ui_cancel, &g_settings, 0.34f);
+            }
+            input.move_x = 0.0f;
+            input.run_held = false;
+            input.jump_pressed = false;
+            input.jump_released = false;
+            input.attack_pressed = false;
+            input.interact_pressed = false;
+            input.toggle_map_pressed = false;
+        }
 
         if (input.toggle_debug_pressed) debug_draw = !debug_draw;
         if (input.reset_pressed)
@@ -1959,13 +2926,26 @@ int main(void)
         if (g_gate_msg_timer > 0.0f) g_gate_msg_timer -= raw_dt;
         if (g_toast_timer > 0.0f) g_toast_timer -= raw_dt;
         if (g_transition_cd > 0.0f) g_transition_cd -= raw_dt;
+        if (g_footstep_cooldown > 0.0f) g_footstep_cooldown -= raw_dt;
 
-        bool sim = (g_fade == FADE_IDLE);
+        bool sim = (g_fade == FADE_IDLE) && !options_open;
         float dt = raw_dt;
         if (hitstop_timer > 0.0f) dt = 0.0f;
         if (!sim) dt = 0.0f;
 
+        bool was_on_ground = player.on_ground;
         if (dt > 0.0f) physics_player(&player, &input, dt);
+        if (dt > 0.0f && rect_overlaps_solid(player_collider(player.position))) {
+            snap_player_to_ground(&player);
+            player.velocity.y = 0.0f;
+            player.on_ground = true;
+        }
+        if (dt > 0.0f && !was_on_ground && player.on_ground) {
+            Vector2 feet = { player.position.x + PLAYER_DRAW_W * 0.5f, player.position.y + PLAYER_DRAW_H };
+            spawn_land_dust(feet, player.facing);
+            play_sfx(g_sfx_land, &g_settings, 0.24f);
+            if (g_settings.screenshake) add_camera_shake(1.5f);
+        }
         if (dt > 0.0f) try_respawn_fall(&player);
         if (dt > 0.0f) try_hazard_veil(&player);
         if (dt > 0.0f) try_transition(&player);
@@ -1977,8 +2957,15 @@ int main(void)
 
         Rectangle atk = attack_hitbox(&player);
         bool atk_active = attack_is_active(&player);
+        if (dt > 0.0f && !enemy.dead && rect_overlaps_solid(enemy.bounds)) {
+            snap_rect_to_ground(&enemy.bounds, TILE_SIZE * 6);
+            enemy.vel_y = 0.0f;
+        }
         if (dt > 0.0f)
             update_enemy(&enemy, &player, &atk, atk_active, &hitstop_timer, dt);
+        tick_particles(raw_dt);
+        update_background_music(&g_settings);
+        update_audio_layering(!enemy.dead, g_room, &g_settings, raw_dt);
 
         float move_in = input.move_x;
         {
@@ -1994,6 +2981,14 @@ int main(void)
                 if (player.anim_time > step) {
                     player.anim_time = 0.0f;
                     player.anim_frame = (player.anim_frame + 1) % nfr;
+                    if (walk_cycle && g_footstep_cooldown <= 0.0f) {
+                        float pitch = input.run_held
+                            ? (0.88f + ((float)GetRandomValue(0, 7) / 100.0f))
+                            : (0.80f + ((float)GetRandomValue(0, 8) / 100.0f));
+                        SetSoundPitch(g_sfx_footstep, pitch);
+                        play_sfx(g_sfx_footstep, &g_settings, input.run_held ? 0.11f : 0.07f);
+                        g_footstep_cooldown = input.run_held ? 0.16f : 0.22f;
+                    }
                 }
             } else if (player.state != PLAYER_ATTACKING) {
                 player.anim_frame = 0;
@@ -2010,6 +3005,28 @@ int main(void)
         float py = player.position.y + PLAYER_DRAW_H * 0.5f;
         cam.target.x = fmaxf(half_vw, fminf(world_w - half_vw, px));
         cam.target.y = fmaxf(half_vh, fminf(world_h - half_vh, py));
+        if (!g_settings.screenshake) {
+            g_camera_shake = 0.0f;
+            g_camera_shake_target = (Vector2){ 0.0f, 0.0f };
+        } else if (g_camera_shake > 0.0f) {
+            g_camera_shake = fmaxf(0.0f, g_camera_shake - FX_SHAKE_DECAY * raw_dt);
+            g_camera_shake_jitter_timer -= raw_dt;
+            if (g_camera_shake_jitter_timer <= 0.0f) {
+                float mag = g_camera_shake * FX_SHAKE_NOISE;
+                g_camera_shake_target.x = ((float)GetRandomValue(-100, 100) / 100.0f) * mag;
+                g_camera_shake_target.y = ((float)GetRandomValue(-100, 100) / 100.0f) * mag;
+                g_camera_shake_jitter_timer = FX_SHAKE_JITTER_TIME;
+            }
+        } else {
+            g_camera_shake_target = (Vector2){ 0.0f, 0.0f };
+        }
+        {
+            float blend = fminf(1.0f, raw_dt * FX_SHAKE_SMOOTH);
+            g_camera_shake_offset.x += (g_camera_shake_target.x - g_camera_shake_offset.x) * blend;
+            g_camera_shake_offset.y += (g_camera_shake_target.y - g_camera_shake_offset.y) * blend;
+            cam.target.x += g_camera_shake_offset.x;
+            cam.target.y += g_camera_shake_offset.y;
+        }
 
         BeginDrawing();
         if (MOBILE_BUILD) ClearBackground((Color){ 34, 38, 54, 255 });
@@ -2049,6 +3066,7 @@ int main(void)
 
             draw_pickups_world();
             draw_lore_nodes_world();
+            draw_particles_world();
 
             if (g_has_hazard && !g_has_veil_drift)
                 DrawRectangleRec(g_hazard, (Color){ 180, 40, 50, 70 });
@@ -2065,14 +3083,16 @@ int main(void)
                         src.x = (float)enemy_tex.width;
                         src.width = -(float)enemy_tex.width;
                     }
-                    DrawTexturePro(enemy_tex, src, enemy.bounds, (Vector2){ 0.0f, 0.0f }, 0.0f, enemy_tint);
+                    Rectangle enemy_dest = enemy.bounds;
+                    enemy_dest.y += ENEMY_SPRITE_Y_OFF;
+                    DrawTexturePro(enemy_tex, src, enemy_dest, (Vector2){ 0.0f, 0.0f }, 0.0f, enemy_tint);
                     if (enemy.hurt_flash > 0.0f)
-                        DrawRectangleRec(enemy.bounds, (Color){ 255, 255, 255, 90 });
+                        DrawRectangleRec(enemy_dest, (Color){ 255, 255, 255, 90 });
                 } else {
                     Color ec = (enemy.hurt_flash > 0.0f) ? WHITE : (Color){ 160, 72, 96, 255 };
                     if (enemy.type == ENEMY_CANTOR) ec = (Color){ 220, 190, 85, 255 };
                     if (enemy.type == ENEMY_HIGH_CANTOR) ec = (Color){ 240, 130, 80, 255 };
-                    DrawRectangleRec(enemy.bounds, ec);
+                    DrawRectangleRec((Rectangle){ enemy.bounds.x, enemy.bounds.y + ENEMY_SPRITE_Y_OFF, enemy.bounds.width, enemy.bounds.height }, ec);
                 }
                 if (enemy.type == ENEMY_HIGH_CANTOR) {
                     Vector2 c = { enemy.bounds.x + enemy.bounds.width * 0.5f, enemy.bounds.y + enemy.bounds.height * 0.5f };
@@ -2114,9 +3134,56 @@ int main(void)
                     float dest_w = PLAYER_DRAW_W;
                     float dest_h = fh * (PLAYER_DRAW_W / fw);
                     float draw_x = player.position.x + (float)player.facing * 6.0f;
-                    float draw_y = player.position.y + PLAYER_DRAW_H - HITBOX_PAD - dest_h;
+                    float draw_y = player.position.y + PLAYER_DRAW_H - HITBOX_PAD - dest_h + PLAYER_SPRITE_Y_OFF;
                     Rectangle dest = { draw_x, draw_y, dest_w, dest_h };
                     DrawTexturePro(attack_tex, fr, dest, (Vector2){ 0.0f, 0.0f }, 0.0f, WHITE);
+                } else if (!player.on_ground && ((use_jump_sequence && jump_seq_count > 0) || (use_jump_sprite && jump_frame_count > 0))) {
+                    float ground_dest_h = PLAYER_DRAW_H;
+                    if (sprite_frame_w > 0)
+                        ground_dest_h = sprite_frame_h * (PLAYER_DRAW_W / (float)sprite_frame_w);
+                    float ground_dest_w = PLAYER_DRAW_W;
+                    if (use_jump_sequence && jump_seq_count > 0) {
+                        int seq_idx = 0;
+                        if (player.velocity.y < -120.0f) seq_idx = (jump_seq_count > 4) ? 2 : 0;
+                        else if (player.velocity.y < 90.0f) seq_idx = jump_seq_count / 2;
+                        else seq_idx = jump_seq_count - 1;
+                        if (seq_idx < 0) seq_idx = 0;
+                        if (seq_idx >= jump_seq_count) seq_idx = jump_seq_count - 1;
+                        Texture2D jt = jump_seq_tex[seq_idx].tex;
+                        Rectangle fr = jump_seq_tex[seq_idx].src;
+                        float fw = fr.width;
+                        float fh = fr.height;
+                        if (player.facing < 0) {
+                            fr.x += fw;
+                            fr.width = -fw;
+                        }
+                        float keep_height_scale = ground_dest_h / fh;
+                        float dest_h = ground_dest_h;
+                        float dest_w = fw * keep_height_scale;
+                        float draw_x = player.position.x + (ground_dest_w - dest_w) * 0.5f;
+                        float draw_y = player.position.y + PLAYER_DRAW_H - HITBOX_PAD - dest_h + PLAYER_SPRITE_Y_OFF;
+                        Rectangle dest = { draw_x, draw_y, dest_w, dest_h };
+                        DrawTexturePro(jt, fr, dest, (Vector2){ 0.0f, 0.0f }, 0.0f, WHITE);
+                    } else {
+                        int jf = pick_jump_frame(&player, jump_frame_count);
+                        if (jf < 0) jf = 0;
+                        if (jf >= jump_frame_count) jf = jump_frame_count - 1;
+                        float fw = (float)jump_frame_w;
+                        float fh = (float)jump_frame_h;
+                        float frame_left = (float)(jf * jump_frame_w);
+                        Rectangle fr = { frame_left, 0.0f, fw, fh };
+                        if (player.facing < 0) {
+                            fr.x = frame_left + fw;
+                            fr.width = -fw;
+                        }
+                        float keep_height_scale = ground_dest_h / fh;
+                        float dest_h = ground_dest_h;
+                        float dest_w = fw * keep_height_scale;
+                        float draw_x = player.position.x + (ground_dest_w - dest_w) * 0.5f;
+                        float draw_y = player.position.y + PLAYER_DRAW_H - HITBOX_PAD - dest_h + PLAYER_SPRITE_Y_OFF;
+                        Rectangle dest = { draw_x, draw_y, dest_w, dest_h };
+                        DrawTexturePro(jump_tex, fr, dest, (Vector2){ 0.0f, 0.0f }, 0.0f, WHITE);
+                    }
                 } else {
                     int af = player.anim_frame;
                     if (sprite_frame_count > 0) af %= sprite_frame_count;
@@ -2139,7 +3206,7 @@ int main(void)
                     float dest_w = PLAYER_DRAW_W;
                     float dest_h = sprite_frame_h * (PLAYER_DRAW_W / (float)sprite_frame_w);
                     float draw_x = player.position.x;
-                    float draw_y = player.position.y + PLAYER_DRAW_H - HITBOX_PAD - dest_h;
+                    float draw_y = player.position.y + PLAYER_DRAW_H - HITBOX_PAD - dest_h + PLAYER_SPRITE_Y_OFF;
                     if (player.state == PLAYER_ATTACKING && sprite_frame_count < 2 && attack_is_active(&player))
                         draw_x += (float)player.facing * 4.0f;
                     Rectangle dest = { draw_x, draw_y, dest_w, dest_h };
@@ -2180,8 +3247,12 @@ int main(void)
                 DrawText("If you see this, rendering works.", 70, screen_h / 2 + 8, 24, (Color){ 35, 42, 60, 255 });
             }
         } else {
-            DrawText("A/D Space Shift sprint J attack E interact/bench R reset F1 debug M chart", 12, 10,
-                     17, (Color){ 200, 198, 210, 255 });
+            DrawText(TextFormat("%s/%s move  %s jump  %s sprint  %s attack  %s interact  %s map  TAB options",
+                                key_label(bindings.key[ACTION_MOVE_LEFT]), key_label(bindings.key[ACTION_MOVE_RIGHT]),
+                                key_label(bindings.key[ACTION_JUMP]), key_label(bindings.key[ACTION_RUN]),
+                                key_label(bindings.key[ACTION_ATTACK]), key_label(bindings.key[ACTION_INTERACT]),
+                                key_label(bindings.key[ACTION_MAP])),
+                     12, 10, 17, (Color){ 200, 198, 210, 255 });
         }
         int ty = 32;
         DrawText(TextFormat("HP %d/%d  Shards %d  Nail T%d", player.hp, player.max_hp, g_choir_shards, g_nail_tier),
@@ -2206,12 +3277,42 @@ int main(void)
             unsigned char a = (unsigned char)(fminf(g_fade_alpha, 1.0f) * 255.0f);
             DrawRectangle(0, 0, screen_w, screen_h, (Color){ 0, 0, 0, a });
         }
+        if (options_open)
+            draw_options_menu(screen_w, screen_h, &bindings, &g_settings, options_selected, options_waiting_for_key);
 
         EndDrawing();
     }
 
+    if (options_dirty)
+        save_user_settings(&bindings, &g_settings);
+
+    if (g_audio_ready) {
+        UnloadSound(g_sfx_jump);
+        UnloadSound(g_sfx_footstep);
+        UnloadSound(g_sfx_land);
+        UnloadSound(g_sfx_hurt);
+        UnloadSound(g_sfx_death);
+        UnloadSound(g_sfx_attack_whiff);
+        UnloadSound(g_sfx_attack_hit);
+        UnloadSound(g_sfx_telegraph);
+        UnloadSound(g_sfx_bench);
+        UnloadSound(g_sfx_ui_confirm);
+        UnloadSound(g_sfx_ui_cancel);
+        UnloadSound(g_sfx_pickup);
+        UnloadSound(g_sfx_zone_calm);
+        UnloadSound(g_sfx_zone_combat);
+        if (g_bgm_loaded) {
+            StopMusicStream(g_bgm);
+            UnloadMusicStream(g_bgm);
+        }
+        CloseAudioDevice();
+    }
+
     if (use_player_sprite) UnloadTexture(player_tex);
     if (use_attack_sprite) UnloadTexture(attack_tex);
+    if (use_jump_sprite) UnloadTexture(jump_tex);
+    for (int i = 0; i < jump_seq_count; i++)
+        UnloadTexture(jump_seq_tex[i].tex);
     if (use_tile_sprite) UnloadTexture(tile_tex);
     if (use_enemy_sprite) UnloadTexture(enemy_tex);
     CloseWindow();

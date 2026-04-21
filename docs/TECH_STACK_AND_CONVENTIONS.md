@@ -105,6 +105,15 @@ Run `platformer.exe` with working directory set to the project folder (or wherev
 
 ---
 
+## Accessibility checklist (Phase 5)
+
+- [x] Runtime key remap for core keyboard actions (move, jump, sprint, attack, interact, map)
+- [x] Master/music/SFX volume controls available in options
+- [x] Optional screenshake toggle (default on)
+- [x] Objective text gives directional guidance for current progression step
+
+---
+
 ## Testing checklist (minimal)
 
 Before merging a Phase 1–3 gameplay PR:

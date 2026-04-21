@@ -10,6 +10,8 @@ This folder holds the **vision**, **milestones**, and **master prompts** for a s
 | [TECH_STACK_AND_CONVENTIONS.md](./TECH_STACK_AND_CONVENTIONS.md) | Stack, folders, coding norms, “done” definition |
 | [world_graph.template.md](./world_graph.template.md) | Copy to `world_graph.md` and fill for Phase 0–2 |
 | [sfx_backlog.md](./sfx_backlog.md) | Phase 5+ sound hooks checklist |
+| [PHASE5_CLOSEOUT_TEST.md](./PHASE5_CLOSEOUT_TEST.md) | Manual pass/fail checklist for Phase 5 closure |
+| [PHASE5_VALIDATION_REPORT.md](./PHASE5_VALIDATION_REPORT.md) | Current pass state and final Phase 5 closure gate |
 
 **Start here:** read `GAME_VISION_AND_SCOPE.md`, then `MILESTONES.md`. Use `MASTER_PROMPTS.md` when delegating work to an agent.
 

@@ -6,6 +6,7 @@
 
 bool load_first_hero(Texture2D *out, bool mobile_build);
 bool load_first_attack(Texture2D *out, bool mobile_build);
+bool load_first_jump(Texture2D *out, bool mobile_build);
 bool load_first_tile(Texture2D *out, bool mobile_build);
 bool load_first_enemy(Texture2D *out, bool mobile_build);
 bool load_first_map(Texture2D *out, bool mobile_build);
