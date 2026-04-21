@@ -36,26 +36,18 @@ android {
 
     sourceSets {
         main {
-            assets.srcDirs = ["../../assets", "src/main/assets"]
+            // Package only the synced local assets folder to keep APK inputs deterministic.
+            assets.srcDirs = ["src/main/assets"]
         }
     }
 }
 
 tasks.register("syncGameAssets", Sync) {
+    // Mirror desktop assets so mobile always ships the same content set.
     from("../../assets") {
-        include "sprite-hero.png"
-        include "medieval-rpg-main-character-d002.png"
-        include "player_spritesheet.png"
-        include "hero-idle-strip.png"
-        include "hero-attack-strip.png"
-        include "sprite-hero-attack.png"
-        include "tile-ground.png"
-        include "tile-stone-ground.png"
-        include "tile.png"
-        include "enemy-echo-basic.png"
-        include "sprite-simple-enemy.png"
-        include "ui-choir-map.png"
-        include "sprite-quest-map.png"
+        include "*.png"
+        include "*.wav"
+        include "*.ogg"
     }
     into("src/main/assets")
 }
