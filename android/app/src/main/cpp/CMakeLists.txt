@@ -15,6 +15,7 @@ add_subdirectory(${RAYLIB_DIR} ${CMAKE_BINARY_DIR}/raylib-build)
 add_library(main SHARED
     ${ANDROID_NDK}/sources/android/native_app_glue/android_native_app_glue.c
     ../../../../../platformer.c
+    ../../../../../src/assets_loader.c
 )
 
 target_compile_definitions(main PRIVATE PLATFORM_ANDROID=1)

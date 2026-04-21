@@ -1,18 +1,19 @@
 /*
- * Phase 3 kickoff — archetype pass (tank/fast/ranged) + Cantor mini-boss gate.
+ * Phase 2+3 slice — expanded room chain + enemy archetypes + final boss gate.
  * Tunables: "Gameplay tuning" below.
  * Manual test: explore Entrance→Hub; test enemy contact + attack windows in each room;
  *   take key; bench (E); East (key) — cling + Cantor → drift;
- *   Hub south (cling) → Shaft — spikes need drift; map pickup; shortcut (E) when open;
- *   pit / spikes respawn at last bench. M map if owned. R full reset. F1 hitboxes.
+ *   Hub south (cling) → Shaft — map pickup; right exit (drift) → Gate bench;
+ *   Gate east (key) → Bellcrown; defeat High Cantor to open final door to Stillwater.
+ *   M map if owned. R full reset. F1 hitboxes.
  *
- * Art (PNG): tries assets/<file> first, then cwd. Canonical names — see ASSET_* below.
+ * Art (PNG): tries assets/<file> first, then cwd. Canonical names/fallbacks live in src/assets_loader.c.
  */
 
 #include "raylib.h"
+#include "include/assets_loader.h"
 #include <math.h>
 #include <stdbool.h>
-#include <stdio.h>
 #include <string.h>
 
 /* --- Gameplay tuning (Phase 1) --- */
@@ -55,18 +56,19 @@
 #define ENEMY_DASH_STRIKE_SPEED 285.0f
 #define ENEMY_TANK_STRIKE_SPEED 195.0f
 #define ENEMY_STRIKE_RADIUS      90.0f
-#define ENEMY_AGGRO_RADIUS      420.0f
-#define ENEMY_AGGRO_LOSE_RADIUS 560.0f
-#define ENEMY_AGGRO_LOSE_TIME     1.4f
+#define ENEMY_AGGRO_RADIUS      360.0f
+#define ENEMY_AGGRO_LOSE_RADIUS 500.0f
+#define ENEMY_AGGRO_LOSE_TIME     0.75f
 #define ENEMY_MELEE_W             58.0f
 #define ENEMY_MELEE_H             44.0f
+#define ENEMY_FAIR_FIGHT_RADIUS  760.0f
 
 #define FADE_SPEED            4.0f
 #define TRANSITION_COOLDOWN   0.18f
 #define BENCH_INTERACT_R      52.0f
 #define PICKUP_RADIUS         28.0f
 #define MAX_DOORS             8
-#define ROOM_COUNT            4
+#define ROOM_COUNT            7
 
 #define PLAYER_DRAW_W       48.0f
 #define PLAYER_DRAW_H       64.0f
@@ -90,22 +92,14 @@
 #define MOBILE_BUILD 0
 #endif
 
-/* --- Canonical asset filenames (PNG). Order = load priority within category. --- */
-#define ASSET_HERO_A     "sprite-hero.png"
-#define ASSET_HERO_B     "medieval-rpg-main-character-d002.png"
-#define ASSET_HERO_C     "player_spritesheet.png"
-/* Horizontal strip, 16 equal cells (packed from sprite-max-px-16-frames). */
-#define ASSET_HERO_ATTACK "sprite-hero-attack.png"
-#define ASSET_TILE_A     "tile-ground.png"
-#define ASSET_TILE_B     "tile.png"
-#define ASSET_ENEMY      "sprite-simple-enemy.png"
-#define ASSET_MAP        "sprite-quest-map.png"
-
 typedef enum RoomId {
     ROOM_ENTRANCE = 0,
     ROOM_HUB = 1,
     ROOM_EAST = 2,
-    ROOM_SHAFT = 3
+    ROOM_SHAFT = 3,
+    ROOM_ANTECHAMBER = 4,
+    ROOM_BELLCROWN = 5,
+    ROOM_STILLWATER = 6
 } RoomId;
 
 typedef enum GateNeed {
@@ -114,6 +108,7 @@ typedef enum GateNeed {
     GATE_CLING,
     GATE_DRIFT,
     GATE_SHORTCUT,
+    GATE_FINAL_CLEAR,
     /* Hub east → arena: key to enter once; seals after Cantor so you don’t loop the same room */
     GATE_EAST_ARENA
 } GateNeed;
@@ -142,7 +137,8 @@ typedef enum EnemyType {
     ENEMY_TANK,
     ENEMY_DASHER,
     ENEMY_CASTER,
-    ENEMY_CANTOR
+    ENEMY_CANTOR,
+    ENEMY_HIGH_CANTOR
 } EnemyType;
 
 /* World / pit: respawn if you fall past playable space (open bottom in pit) */
@@ -176,6 +172,7 @@ static bool g_map_open = false;
 static bool g_mobile_run_mode = true;
 
 static bool g_dummy_defeated = false;
+static bool g_high_cantor_defeated = false;
 static bool g_shortcut_unlocked = false;
 static PickupState g_pick_key = { 0 };
 static PickupState g_pick_cling = { 0 };
@@ -186,46 +183,6 @@ static const char *g_gate_msg = NULL;
 /* Brief safety after fade-in; door latch (prev-in-zone) does most of the work. */
 static float g_transition_cd = 0.0f;
 static bool  g_prev_in_door[MAX_DOORS];
-
-/* Try assets/<name> then ./<name>. Returns true if texture loaded (width > 0). */
-static bool load_texture_asset(Texture2D *out, const char *filename)
-{
-    char path[160];
-#if MOBILE_BUILD
-    *out = LoadTexture(filename);
-    if (out->width > 0) return true;
-    int nm = snprintf(path, sizeof path, "assets/%s", filename);
-    if (nm > 0 && nm < (int)sizeof path) {
-        *out = LoadTexture(path);
-        if (out->width > 0) return true;
-    }
-#endif
-    int n = snprintf(path, sizeof path, "assets/%s", filename);
-    if (n > 0 && n < (int)sizeof path && FileExists(path)) {
-        *out = LoadTexture(path);
-        if (out->width > 0) return true;
-    }
-    if (FileExists(filename)) {
-        *out = LoadTexture(filename);
-        if (out->width > 0) return true;
-    }
-    return false;
-}
-
-static bool load_first_hero(Texture2D *out)
-{
-    if (load_texture_asset(out, ASSET_HERO_A)) return true;
-    if (load_texture_asset(out, ASSET_HERO_B)) return true;
-    if (load_texture_asset(out, ASSET_HERO_C)) return true;
-    return false;
-}
-
-static bool load_first_tile(Texture2D *out)
-{
-    if (load_texture_asset(out, ASSET_TILE_A)) return true;
-    if (load_texture_asset(out, ASSET_TILE_B)) return true;
-    return false;
-}
 
 typedef enum PlayerState {
     PLAYER_NORMAL = 0,
@@ -265,6 +222,9 @@ typedef struct DummyEnemy {
     bool shot_live;
     Vector2 shot_pos;
     Vector2 shot_vel;
+    float shot_windup;
+    Vector2 shot_preview_dir;
+    float shot_speed_mult;
     bool aggro;
     bool dead;
 } DummyEnemy;
@@ -312,65 +272,6 @@ static void draw_touch_controls(const TouchUi *touch_ui);
 
 static int level_map[MAP_HEIGHT][MAP_WIDTH];
 
-/*
- * Horizontal sprite strip: detect frame count + frame width.
- * If width is not a multiple of PLAYER_DRAW_W (48), integer division can yield 1 frame
- * and the full texture is drawn — e.g. 64px sheet with two 32px poses looks like "two chars".
- */
-static void compute_horizontal_strip(Texture2D t, int *out_fw, int *out_fh, int *out_nf)
-{
-    int W = t.width;
-    int H = t.height;
-    *out_fh = H;
-    const int cell = (int)PLAYER_DRAW_W;
-
-    if (W <= 0) {
-        *out_fw = cell;
-        *out_nf = 1;
-        return;
-    }
-
-    /*
-     * ASSET_HERO_A / ASSET_HERO_B: one wide pose 64×32,
-     * NOT two 32×32 cels. Old logic split into L/R halves → half body + flashing.
-     */
-    if (W == 64 && H == 32) {
-        *out_nf = 1;
-        *out_fw = 64;
-        *out_fh = 32;
-        return;
-    }
-
-    /* 1) N frames of 48px (matches gameplay width) */
-    if (W >= cell && W % cell == 0) {
-        *out_nf = W / cell;
-        *out_fw = cell;
-        if (*out_nf > 32) *out_nf = 32;
-        return;
-    }
-
-    /* 2) N frames of 32px (common pixel art; e.g. 64 = 2 frames, 128 = 4) */
-    if (W % 32 == 0 && W >= 64) {
-        *out_nf = W / 32;
-        *out_fw = 32;
-        if (*out_nf > 32) *out_nf = 32;
-        return;
-    }
-
-    /* 3) Two equal halves (typical 2-frame walk) — only if splitting won’t treat tiny sheets wrong */
-    if (W % 2 == 0 && W >= 48) {
-        int hw = W / 2;
-        if (hw >= 12 && hw <= 80) {
-            *out_nf = 2;
-            *out_fw = hw;
-            return;
-        }
-    }
-
-    *out_nf = 1;
-    *out_fw = W;
-}
-
 static void draw_tile_texture(Texture2D t, int px0, int py0)
 {
     Rectangle src = { 0.0f, 0.0f, (float)t.width, (float)t.height };
@@ -409,6 +310,7 @@ static bool gate_satisfied(GateNeed need)
         case GATE_CLING: return g_has_chord_cling;
         case GATE_DRIFT: return g_has_veil_drift;
         case GATE_SHORTCUT: return g_shortcut_unlocked;
+        case GATE_FINAL_CLEAR: return g_high_cantor_defeated;
         case GATE_EAST_ARENA:
             return g_has_cathedral_key && !g_dummy_defeated;
         default: return true;
@@ -422,6 +324,7 @@ static const char *gate_denial_text(GateNeed need)
         case GATE_CLING: return "Too narrow — need Chord Cling";
         case GATE_DRIFT: return "Need Veil Drift to pass";
         case GATE_SHORTCUT: return "Shortcut not open yet";
+        case GATE_FINAL_CLEAR: return "The hymn still rages — defeat High Cantor first";
         case GATE_EAST_ARENA:
             if (!g_has_cathedral_key) return "Locked — need Cathedral Key";
             if (g_dummy_defeated) return "The east choir is sealed — take the shaft south.";
@@ -615,8 +518,8 @@ static void build_room_shaft(void)
                   ROOM_HUB, 8.0f * (float)TILE_SIZE,
                   (float)(fl_bot * TILE_SIZE) - PLAYER_DRAW_H - 0.5f, GATE_NONE);
         door_push((Rectangle){ (float)(MAP_WIDTH * TILE_SIZE) - 130.0f, by, 120.0f, (float)(3 * TILE_SIZE) },
-                  ROOM_HUB, 14.0f * (float)TILE_SIZE,
-                  (float)(fl_bot * TILE_SIZE) - PLAYER_DRAW_H - 0.5f, GATE_NONE);
+                  ROOM_ANTECHAMBER, 3.0f * (float)TILE_SIZE,
+                  (float)(HUB_FLOOR_ROW * TILE_SIZE) - PLAYER_DRAW_H - 0.5f, GATE_DRIFT);
 
         float bx = (float)(cx * TILE_SIZE);
         door_push((Rectangle){ bx - 52.0f, by, 104.0f, (float)(3 * TILE_SIZE) },
@@ -639,6 +542,114 @@ static void build_room_shaft(void)
                          (float)(fl_top * TILE_SIZE) - PLAYER_DRAW_H - 0.5f };
 }
 
+/*
+ * Antechamber: late-game bench lobby after Shaft's drift gate.
+ * Adds a high return-lift door that loops back to Entrance.
+ */
+static void build_room_antechamber(void)
+{
+    clear_level();
+    g_ndoors = 0;
+    g_has_hazard = false;
+    g_has_hub_shaft_mark = false;
+    const int fl = HUB_FLOOR_ROW;
+
+    fill_rect(0, 0, MAP_WIDTH - 1, 0, 1);
+    fill_rect(0, fl, MAP_WIDTH - 1, MAP_HEIGHT - 1, 1);
+    fill_rect(0, 0, 0, fl - 4, 1);
+    fill_rect(0, fl + 1, 0, MAP_HEIGHT - 1, 1);
+    fill_rect(MAP_WIDTH - 1, 0, MAP_WIDTH - 1, fl - 4, 1);
+    fill_rect(MAP_WIDTH - 1, fl + 1, MAP_WIDTH - 1, MAP_HEIGHT - 1, 1);
+    fill_rect(12, fl - 5, 18, fl - 5, 1);
+    fill_rect(36, fl - 6, 43, fl - 6, 1);
+
+    g_has_bench_here = true;
+    g_bench_zone = (Rectangle){ 26.0f * (float)TILE_SIZE, (float)((fl - 2) * TILE_SIZE),
+                                (float)(4 * TILE_SIZE), (float)(2 * TILE_SIZE) };
+    g_bench_spawn = (Vector2){ g_bench_zone.x + g_bench_zone.width * 0.5f - PLAYER_DRAW_W * 0.5f,
+                               (float)(fl * TILE_SIZE) - PLAYER_DRAW_H - 0.5f };
+
+    door_push((Rectangle){ 8.0f, (float)((fl - 3) * TILE_SIZE), 40.0f, (float)(5 * TILE_SIZE) },
+              ROOM_SHAFT, 14.0f * (float)TILE_SIZE,
+              (float)((MAP_HEIGHT - 4) * TILE_SIZE) - PLAYER_DRAW_H - 0.5f, GATE_NONE);
+    door_push((Rectangle){ (float)((MAP_WIDTH - 1) * TILE_SIZE - 4), (float)((fl - 3) * TILE_SIZE),
+                           44.0f, (float)(4 * TILE_SIZE) },
+              ROOM_BELLCROWN, 4.0f * (float)TILE_SIZE,
+              (float)(HUB_FLOOR_ROW * TILE_SIZE) - PLAYER_DRAW_H - 0.5f, GATE_KEY);
+    door_push((Rectangle){ (float)((MAP_WIDTH - 10) * TILE_SIZE), (float)((fl - 8) * TILE_SIZE),
+                           (float)(5 * TILE_SIZE), (float)(3 * TILE_SIZE) },
+              ROOM_ENTRANCE, 5.0f * (float)TILE_SIZE,
+              (float)(HUB_FLOOR_ROW * TILE_SIZE) - PLAYER_DRAW_H - 0.5f, GATE_NONE);
+
+    g_spawn = (Vector2){ 8.0f * (float)TILE_SIZE, (float)(fl * TILE_SIZE) - PLAYER_DRAW_H - 0.5f };
+}
+
+/*
+ * Bellcrown: final boss room. Right door opens only after High Cantor is defeated.
+ * After boss clear, a high-left loop door also reconnects to Entrance.
+ */
+static void build_room_bellcrown(void)
+{
+    clear_level();
+    g_ndoors = 0;
+    g_has_bench_here = false;
+    g_has_hazard = false;
+    const int fl = HUB_FLOOR_ROW;
+
+    fill_rect(0, 0, MAP_WIDTH - 1, 0, 1);
+    fill_rect(0, fl, MAP_WIDTH - 1, MAP_HEIGHT - 1, 1);
+    fill_rect(0, 0, 0, fl - 4, 1);
+    fill_rect(0, fl + 1, 0, MAP_HEIGHT - 1, 1);
+    fill_rect(MAP_WIDTH - 1, 0, MAP_WIDTH - 1, fl - 4, 1);
+    fill_rect(MAP_WIDTH - 1, fl + 1, MAP_WIDTH - 1, MAP_HEIGHT - 1, 1);
+    fill_rect(22, fl - 1, 33, fl - 1, 1);
+    fill_rect(6, fl - 5, 12, fl - 5, 1);
+    fill_rect(43, fl - 5, 49, fl - 5, 1);
+
+    door_push((Rectangle){ 8.0f, (float)((fl - 3) * TILE_SIZE), 40.0f, (float)(5 * TILE_SIZE) },
+              ROOM_ANTECHAMBER, 14.0f * (float)TILE_SIZE,
+              (float)(HUB_FLOOR_ROW * TILE_SIZE) - PLAYER_DRAW_H - 0.5f, GATE_NONE);
+    door_push((Rectangle){ (float)((MAP_WIDTH - 1) * TILE_SIZE - 4), (float)((fl - 3) * TILE_SIZE),
+                           44.0f, (float)(4 * TILE_SIZE) },
+              ROOM_STILLWATER, 3.0f * (float)TILE_SIZE,
+              (float)(HUB_FLOOR_ROW * TILE_SIZE) - PLAYER_DRAW_H - 0.5f, GATE_FINAL_CLEAR);
+    door_push((Rectangle){ 10.0f, (float)((fl - 8) * TILE_SIZE), (float)(5 * TILE_SIZE), (float)(3 * TILE_SIZE) },
+              ROOM_ENTRANCE, 5.0f * (float)TILE_SIZE,
+              (float)(HUB_FLOOR_ROW * TILE_SIZE) - PLAYER_DRAW_H - 0.5f, GATE_FINAL_CLEAR);
+
+    g_spawn = (Vector2){ 5.0f * (float)TILE_SIZE, (float)(fl * TILE_SIZE) - PLAYER_DRAW_H - 0.5f };
+}
+
+/*
+ * Stillwater: short ending walkout room after final boss.
+ * Right edge loops to Entrance so the world wraps back to start.
+ */
+static void build_room_stillwater(void)
+{
+    clear_level();
+    g_ndoors = 0;
+    g_has_bench_here = false;
+    g_has_hazard = false;
+    const int fl = HUB_FLOOR_ROW;
+
+    fill_rect(0, 0, MAP_WIDTH - 1, 0, 1);
+    fill_rect(0, fl, MAP_WIDTH - 1, MAP_HEIGHT - 1, 1);
+    fill_rect(0, 0, 0, fl - 4, 1);
+    fill_rect(0, fl + 1, 0, MAP_HEIGHT - 1, 1);
+    fill_rect(14, fl - 4, 20, fl - 4, 1);
+    fill_rect(35, fl - 4, 41, fl - 4, 1);
+
+    door_push((Rectangle){ 8.0f, (float)((fl - 3) * TILE_SIZE), 40.0f, (float)(5 * TILE_SIZE) },
+              ROOM_BELLCROWN, 14.0f * (float)TILE_SIZE,
+              (float)(HUB_FLOOR_ROW * TILE_SIZE) - PLAYER_DRAW_H - 0.5f, GATE_NONE);
+    door_push((Rectangle){ (float)((MAP_WIDTH - 1) * TILE_SIZE - 4), (float)((fl - 3) * TILE_SIZE),
+                           44.0f, (float)(4 * TILE_SIZE) },
+              ROOM_ENTRANCE, 4.0f * (float)TILE_SIZE,
+              (float)(HUB_FLOOR_ROW * TILE_SIZE) - PLAYER_DRAW_H - 0.5f, GATE_NONE);
+
+    g_spawn = (Vector2){ 6.0f * (float)TILE_SIZE, (float)(fl * TILE_SIZE) - PLAYER_DRAW_H - 0.5f };
+}
+
 static void latch_doors_from_player(Player *p)
 {
     Rectangle b = player_collider(p->position);
@@ -654,6 +665,9 @@ static void build_room(RoomId id)
         case ROOM_HUB: build_room_hub(); break;
         case ROOM_EAST: build_room_east(); break;
         case ROOM_SHAFT: build_room_shaft(); break;
+        case ROOM_ANTECHAMBER: build_room_antechamber(); break;
+        case ROOM_BELLCROWN: build_room_bellcrown(); break;
+        case ROOM_STILLWATER: build_room_stillwater(); break;
         default: build_room_entrance(); break;
     }
 }
@@ -990,6 +1004,19 @@ static void physics_player(Player *p, const InputState *in, float dt)
     resolve_axis_y(&body, prev_body_y, &p->velocity.y, &p->on_ground);
     p->position.y = body.y - HITBOX_PAD;
 
+    /* Hard world clamp: prevents slipping outside room bounds through doorway seams. */
+    {
+        const float min_x = 0.0f;
+        const float max_x = (float)(MAP_WIDTH * TILE_SIZE) - PLAYER_DRAW_W;
+        if (p->position.x < min_x) {
+            p->position.x = min_x;
+            if (p->velocity.x < 0.0f) p->velocity.x = 0.0f;
+        } else if (p->position.x > max_x) {
+            p->position.x = max_x;
+            if (p->velocity.x > 0.0f) p->velocity.x = 0.0f;
+        }
+    }
+
     /*
      * Shaft safety clamp: even if a tiny collision seam remains, keep the player on the
      * lower deck instead of letting them drop into kill-line respawns.
@@ -1008,6 +1035,17 @@ static void push_toast(const char *msg, float sec)
 {
     g_toast = msg;
     g_toast_timer = sec;
+}
+
+static const char *current_objective_text(void)
+{
+    if (!g_has_cathedral_key) return "Objective: find Cathedral Key in Entrance";
+    if (!g_dummy_defeated) return "Objective: defeat Cantor in East arena";
+    if (!g_has_chord_cling) return "Objective: collect Chord Cling in East arena";
+    if (!g_has_map) return "Objective: enter Shaft and collect Choir Chart";
+    if (!g_high_cantor_defeated) return "Objective: reach Bellcrown and defeat High Cantor";
+    if (g_room != ROOM_STILLWATER) return "Objective: proceed to Stillwater";
+    return "Objective: complete";
 }
 
 static void try_respawn_fall(Player *p)
@@ -1144,6 +1182,7 @@ static const char *enemy_name(EnemyType type)
         case ENEMY_DASHER: return "Needle Echo";
         case ENEMY_CASTER: return "Canticle Slinger";
         case ENEMY_CANTOR: return "Cantor";
+        case ENEMY_HIGH_CANTOR: return "High Cantor";
         default: return "Echo";
     }
 }
@@ -1162,6 +1201,9 @@ static void sync_dummy_for_room(DummyEnemy *e)
     e->shot_live = false;
     e->shot_pos = (Vector2){ 0.0f, 0.0f };
     e->shot_vel = (Vector2){ 0.0f, 0.0f };
+    e->shot_windup = 0.0f;
+    e->shot_preview_dir = (Vector2){ 1.0f, 0.0f };
+    e->shot_speed_mult = 1.0f;
     e->aggro = false;
 
     switch (g_room) {
@@ -1194,6 +1236,21 @@ static void sync_dummy_for_room(DummyEnemy *e)
             e->aggro = true;
             e->dead = g_dummy_defeated;
             break;
+        case ROOM_ANTECHAMBER:
+            e->type = ENEMY_CASTER;
+            e->hp = 4;
+            e->bounds = hub_enemy_spawn();
+            e->patrol_half = 0.0f;
+            e->dead = false;
+            break;
+        case ROOM_BELLCROWN:
+            e->type = ENEMY_HIGH_CANTOR;
+            e->hp = 7;
+            e->bounds = east_enemy_spawn();
+            e->patrol_half = 10.0f * (float)TILE_SIZE;
+            e->aggro = true;
+            e->dead = g_high_cantor_defeated;
+            break;
         default:
             e->type = ENEMY_NONE;
             e->hp = 0;
@@ -1214,6 +1271,7 @@ static void reset_run(Player *p, DummyEnemy *e, float *hitstop)
     g_has_map = false;
     g_map_open = false;
     g_dummy_defeated = false;
+    g_high_cantor_defeated = false;
     g_shortcut_unlocked = false;
     g_pick_key.collected = false;
     g_pick_cling.collected = false;
@@ -1296,8 +1354,10 @@ static void update_enemy(DummyEnemy *e, Player *p, const Rectangle *attack, bool
     float dist_x = fabsf(player_center_x - enemy_center_x);
     float dist_y = fabsf(player_center_y - enemy_center_y);
     float dist = sqrtf(dist_x * dist_x + dist_y * dist_y);
+    bool in_fair_fight_range = (dist <= ENEMY_FAIR_FIGHT_RADIUS);
+    bool can_pressure_player = in_fair_fight_range;
 
-    if (e->type != ENEMY_CANTOR) {
+    if (e->type != ENEMY_CANTOR && e->type != ENEMY_HIGH_CANTOR) {
         if (!e->aggro && dist <= ENEMY_AGGRO_RADIUS)
             e->aggro = true;
 
@@ -1306,6 +1366,10 @@ static void update_enemy(DummyEnemy *e, Player *p, const Rectangle *attack, bool
             if (e->aggro_lost_timer >= ENEMY_AGGRO_LOSE_TIME) {
                 e->aggro = false;
                 e->aggro_lost_timer = 0.0f;
+                e->strike_timer = 0.0f;
+                e->shot_live = false;
+                e->shot_windup = 0.0f;
+                e->ai_timer = 0.35f;
             }
         } else {
             e->aggro_lost_timer = 0.0f;
@@ -1355,34 +1419,61 @@ static void update_enemy(DummyEnemy *e, Player *p, const Rectangle *attack, bool
             speed = 0.0f;
             if (e->aggro) {
                 e->dir = (player_center_x >= enemy_center_x) ? 1 : -1;
-                e->ai_timer -= dt;
-                if (e->ai_timer <= 0.0f && !e->shot_live) {
-                    e->ai_timer = 1.25f;
-                    e->shot_live = true;
-                    e->shot_pos = (Vector2){ enemy_center_x, e->bounds.y + e->bounds.height * 0.45f };
-                    e->shot_vel = (Vector2){ (float)e->dir * ENEMY_SHOT_SPEED, 0.0f };
+                if (can_pressure_player) {
+                    e->ai_timer -= dt;
+                    if (e->ai_timer <= 0.0f && !e->shot_live && e->shot_windup <= 0.0f) {
+                        e->ai_timer = 1.25f;
+                        e->shot_windup = 0.30f;
+                        e->shot_preview_dir = (Vector2){ (float)e->dir, 0.0f };
+                        e->shot_speed_mult = 1.0f;
+                    }
                 }
             }
             break;
         case ENEMY_CANTOR:
             e->dir = (player_center_x >= enemy_center_x) ? 1 : -1;
-            speed = e->enrage_phase ? 170.0f : 95.0f;
-            body_attack_active = true;
-            e->ai_timer -= dt;
-            if (e->ai_timer <= 0.0f && !e->shot_live) {
-                float phase_mult = e->enrage_phase ? 0.65f : 1.0f;
-                Vector2 to_player = {
-                    player_center_x - enemy_center_x,
-                    (p->position.y + PLAYER_DRAW_H * 0.45f) - (e->bounds.y + e->bounds.height * 0.45f)
-                };
-                float len = sqrtf(to_player.x * to_player.x + to_player.y * to_player.y);
-                Vector2 dirn = (len > 0.001f) ? (Vector2){ to_player.x / len, to_player.y / len } : (Vector2){ (float)e->dir, 0.0f };
-                e->ai_timer = 1.05f * phase_mult;
-                e->shot_live = true;
-                e->shot_pos = (Vector2){ enemy_center_x, e->bounds.y + e->bounds.height * 0.45f };
-                e->shot_vel = (Vector2){ dirn.x * ENEMY_SHOT_SPEED, dirn.y * ENEMY_SHOT_SPEED };
+            speed = can_pressure_player ? (e->enrage_phase ? 170.0f : 95.0f) : 52.0f;
+            body_attack_active = can_pressure_player;
+            if (can_pressure_player) {
+                e->ai_timer -= dt;
+                if (e->ai_timer <= 0.0f && !e->shot_live && e->shot_windup <= 0.0f) {
+                    float phase_mult = e->enrage_phase ? 0.65f : 1.0f;
+                    Vector2 to_player = {
+                        player_center_x - enemy_center_x,
+                        (p->position.y + PLAYER_DRAW_H * 0.45f) - (e->bounds.y + e->bounds.height * 0.45f)
+                    };
+                    float len = sqrtf(to_player.x * to_player.x + to_player.y * to_player.y);
+                    Vector2 dirn = (len > 0.001f) ? (Vector2){ to_player.x / len, to_player.y / len } : (Vector2){ (float)e->dir, 0.0f };
+                    e->ai_timer = 1.05f * phase_mult;
+                    e->shot_windup = 0.36f;
+                    e->shot_preview_dir = dirn;
+                    e->shot_speed_mult = 1.0f;
+                }
             }
             break;
+        case ENEMY_HIGH_CANTOR: {
+            e->dir = (player_center_x >= enemy_center_x) ? 1 : -1;
+            speed = can_pressure_player ? (e->enrage_phase ? 205.0f : 125.0f) : 64.0f;
+            body_attack_active = can_pressure_player && e->enrage_phase;
+            if (can_pressure_player) {
+                e->ai_timer -= dt;
+                if (e->ai_timer <= 0.0f && !e->shot_live && e->shot_windup <= 0.0f) {
+                    float phase_mult = e->enrage_phase ? 0.58f : 1.0f;
+                    float shot_mult = e->enrage_phase ? 1.20f : 1.0f;
+                    Vector2 to_player = {
+                        player_center_x - enemy_center_x,
+                        (p->position.y + PLAYER_DRAW_H * 0.45f) - (e->bounds.y + e->bounds.height * 0.45f)
+                    };
+                    float len = sqrtf(to_player.x * to_player.x + to_player.y * to_player.y);
+                    Vector2 dirn = (len > 0.001f) ? (Vector2){ to_player.x / len, to_player.y / len } : (Vector2){ (float)e->dir, 0.0f };
+                    e->ai_timer = 0.90f * phase_mult;
+                    e->shot_windup = e->enrage_phase ? 0.26f : 0.32f;
+                    e->shot_preview_dir = dirn;
+                    e->shot_speed_mult = shot_mult;
+                }
+            }
+            break;
+        }
         default:
             speed = 0.0f;
             break;
@@ -1432,6 +1523,16 @@ static void update_enemy(DummyEnemy *e, Player *p, const Rectangle *attack, bool
         melee_attack_active = true;
     }
 
+    if (e->shot_windup > 0.0f) {
+        e->shot_windup -= dt;
+        if (e->shot_windup <= 0.0f && !e->shot_live) {
+            e->shot_live = true;
+            e->shot_pos = (Vector2){ enemy_center_x, e->bounds.y + e->bounds.height * 0.45f };
+            e->shot_vel = (Vector2){ e->shot_preview_dir.x * ENEMY_SHOT_SPEED * e->shot_speed_mult,
+                                     e->shot_preview_dir.y * ENEMY_SHOT_SPEED * e->shot_speed_mult };
+        }
+    }
+
     if (e->shot_live) {
         e->shot_pos.x += e->shot_vel.x * dt;
         e->shot_pos.y += e->shot_vel.y * dt;
@@ -1450,9 +1551,10 @@ static void update_enemy(DummyEnemy *e, Player *p, const Rectangle *attack, bool
         *hitstop = HITSTOP_DURATION;
         float knock = (enemy_center_x >= player_center_x) ? ENEMY_KNOCKBACK : -ENEMY_KNOCKBACK;
         e->bounds.x += knock * dt * 6.0f;
-        if (e->type == ENEMY_CANTOR && e->hp <= 2 && !e->enrage_phase) {
+        if ((e->type == ENEMY_CANTOR && e->hp <= 2 && !e->enrage_phase) ||
+            (e->type == ENEMY_HIGH_CANTOR && e->hp <= 3 && !e->enrage_phase)) {
             e->enrage_phase = true;
-            push_toast("Cantor enrages", 1.4f);
+            push_toast((e->type == ENEMY_HIGH_CANTOR) ? "High Cantor phase II" : "Cantor enrages", 1.4f);
         }
         if (e->hp <= 0) {
             e->dead = true;
@@ -1462,6 +1564,9 @@ static void update_enemy(DummyEnemy *e, Player *p, const Rectangle *attack, bool
                 g_has_veil_drift = true;
                 g_shortcut_unlocked = true;
                 push_toast("Cantor falls — Veil Drift; shortcut opens", 2.5f);
+            } else if (e->type == ENEMY_HIGH_CANTOR) {
+                g_high_cantor_defeated = true;
+                push_toast("High Cantor falls — path to Stillwater opens", 2.6f);
             } else {
                 push_toast("Echo disperses", 1.2f);
             }
@@ -1487,19 +1592,22 @@ static void draw_minimap(int screen_w)
     if (!g_has_map || !g_map_open) return;
     const int cell = 22;
     const int pad = 14;
-    int ox = screen_w - 2 * cell - 28 - pad;
+    const int cols = 4;
+    const int gap = 6;
+    int minimap_w = cols * cell + (cols - 1) * gap;
+    int ox = screen_w - minimap_w - pad;
     int oy = pad;
-    const char *lbl[4] = { "E", "H", "A", "S" };
+    const char *lbl[ROOM_COUNT] = { "E", "H", "A", "S", "G", "B", "X" };
     for (int i = 0; i < ROOM_COUNT; i++) {
-        int cx = ox + (i % 2) * (cell + 6);
-        int cy = oy + (i / 2) * (cell + 6);
+        int cx = ox + (i % cols) * (cell + gap);
+        int cy = oy + (i / cols) * (cell + gap);
         Color fill = g_room_seen[i] ? (Color){ 90, 110, 160, 220 } : (Color){ 35, 38, 48, 220 };
         if (i == (int)g_room) fill = (Color){ 210, 190, 120, 255 };
         DrawRectangle(cx, cy, cell, cell, fill);
         DrawRectangleLines(cx, cy, cell, cell, (Color){ 20, 22, 30, 255 });
         DrawText(lbl[i], cx + 6, cy + 4, 16, WHITE);
     }
-    DrawText("Choir chart", ox, oy + 2 * cell + 20, 16, (Color){ 170, 168, 190, 255 });
+    DrawText("Choir chart", ox, oy + 2 * cell + gap * 2 + 20, 16, (Color){ 170, 168, 190, 255 });
 }
 
 int main(void)
@@ -1520,7 +1628,7 @@ int main(void)
     build_room(g_room);
 
     if (!MOBILE_BUILD) SetConfigFlags(FLAG_WINDOW_RESIZABLE);
-    InitWindow(start_w, start_h, "The Sunken Choir — Phase 3 kickoff");
+    InitWindow(start_w, start_h, "The Sunken Choir — Phase 2+3 slice");
 
     Texture2D player_tex = {0};
     Texture2D attack_tex = {0};
@@ -1532,18 +1640,18 @@ int main(void)
     bool use_enemy_sprite = false;
 
     if (!MOBILE_BUILD) {
-        use_player_sprite = load_first_hero(&player_tex);
+        use_player_sprite = load_first_hero(&player_tex, MOBILE_BUILD);
         if (use_player_sprite)
             SetTextureFilter(player_tex, TEXTURE_FILTER_POINT);
-        use_attack_sprite = load_texture_asset(&attack_tex, ASSET_HERO_ATTACK);
+        use_attack_sprite = load_first_attack(&attack_tex, MOBILE_BUILD);
         if (use_attack_sprite)
             SetTextureFilter(attack_tex, TEXTURE_FILTER_POINT);
 
-        use_tile_sprite = load_first_tile(&tile_tex);
+        use_tile_sprite = load_first_tile(&tile_tex, MOBILE_BUILD);
         if (use_tile_sprite)
             SetTextureFilter(tile_tex, TEXTURE_FILTER_POINT);
 
-        use_enemy_sprite = load_texture_asset(&enemy_tex, ASSET_ENEMY);
+        use_enemy_sprite = load_first_enemy(&enemy_tex, MOBILE_BUILD);
         if (use_enemy_sprite)
             SetTextureFilter(enemy_tex, TEXTURE_FILTER_POINT);
     }
@@ -1555,7 +1663,7 @@ int main(void)
     int attack_frame_h = (int)PLAYER_DRAW_H;
     int attack_frame_count = 1;
     if (use_player_sprite)
-        compute_horizontal_strip(player_tex, &sprite_frame_w, &sprite_frame_h, &sprite_frame_count);
+        compute_horizontal_strip(player_tex, (int)PLAYER_DRAW_W, &sprite_frame_w, &sprite_frame_h, &sprite_frame_count);
     if (use_attack_sprite) {
         int fw = attack_tex.width / HERO_ATTACK_FRAMES;
         if (fw > 0) {
@@ -1598,12 +1706,12 @@ int main(void)
         if (mobile_deferred_texture_load) {
             mobile_texture_load_timer += raw_dt;
             if (mobile_texture_load_timer > 0.40f) {
-                use_player_sprite = load_first_hero(&player_tex);
+                use_player_sprite = load_first_hero(&player_tex, MOBILE_BUILD);
                 if (use_player_sprite) {
                     SetTextureFilter(player_tex, TEXTURE_FILTER_POINT);
-                    compute_horizontal_strip(player_tex, &sprite_frame_w, &sprite_frame_h, &sprite_frame_count);
+                    compute_horizontal_strip(player_tex, (int)PLAYER_DRAW_W, &sprite_frame_w, &sprite_frame_h, &sprite_frame_count);
                 }
-                use_attack_sprite = load_texture_asset(&attack_tex, ASSET_HERO_ATTACK);
+                use_attack_sprite = load_first_attack(&attack_tex, MOBILE_BUILD);
                 if (use_attack_sprite) {
                     SetTextureFilter(attack_tex, TEXTURE_FILTER_POINT);
                     int fw = attack_tex.width / HERO_ATTACK_FRAMES;
@@ -1615,9 +1723,9 @@ int main(void)
                         use_attack_sprite = false;
                     }
                 }
-                use_tile_sprite = load_first_tile(&tile_tex);
+                use_tile_sprite = load_first_tile(&tile_tex, MOBILE_BUILD);
                 if (use_tile_sprite) SetTextureFilter(tile_tex, TEXTURE_FILTER_POINT);
-                use_enemy_sprite = load_texture_asset(&enemy_tex, ASSET_ENEMY);
+                use_enemy_sprite = load_first_enemy(&enemy_tex, MOBILE_BUILD);
                 if (use_enemy_sprite) SetTextureFilter(enemy_tex, TEXTURE_FILTER_POINT);
                 mobile_deferred_texture_load = false;
             }
@@ -1733,6 +1841,7 @@ int main(void)
             if (!enemy.dead) {
                 Color enemy_tint = WHITE;
                 if (enemy.type == ENEMY_CANTOR) enemy_tint = (Color){ 255, 242, 145, 255 };
+                else if (enemy.type == ENEMY_HIGH_CANTOR) enemy_tint = (Color){ 255, 180, 110, 255 };
                 else if (enemy.type == ENEMY_CASTER) enemy_tint = (Color){ 190, 220, 255, 255 };
                 else if (enemy.type == ENEMY_TANK) enemy_tint = (Color){ 210, 185, 170, 255 };
                 if (use_enemy_sprite) {
@@ -1747,21 +1856,28 @@ int main(void)
                 } else {
                     Color ec = (enemy.hurt_flash > 0.0f) ? WHITE : (Color){ 160, 72, 96, 255 };
                     if (enemy.type == ENEMY_CANTOR) ec = (Color){ 220, 190, 85, 255 };
+                    if (enemy.type == ENEMY_HIGH_CANTOR) ec = (Color){ 240, 130, 80, 255 };
                     DrawRectangleRec(enemy.bounds, ec);
                 }
-                if (!MOBILE_BUILD)
-                    DrawRectangleLinesEx(enemy.bounds, 2.0f, (Color){ 40, 36, 44, 255 });
-                if (enemy.type == ENEMY_CANTOR) {
+                if (enemy.type == ENEMY_HIGH_CANTOR) {
                     Vector2 c = { enemy.bounds.x + enemy.bounds.width * 0.5f, enemy.bounds.y + enemy.bounds.height * 0.5f };
                     float rr = enemy.bounds.width * 0.7f + (enemy.enrage_phase ? 10.0f : 0.0f);
-                    DrawCircleLines((int)c.x, (int)c.y, rr, (Color){ 255, 220, 120, 220 });
-                } else if (enemy.strike_timer > 0.0f && enemy.strike_timer < 0.20f) {
-                    DrawRectangleLinesEx(enemy.bounds, 3.0f, (Color){ 255, 140, 120, 240 });
+                    Color rc = (Color){ 255, 150, 90, 230 };
+                    DrawCircleLines((int)c.x, (int)c.y, rr, rc);
                 }
             }
             if (enemy.shot_live) {
                 Color shot_col = (enemy.type == ENEMY_CANTOR) ? (Color){ 255, 220, 90, 245 } : (Color){ 120, 210, 255, 240 };
+                if (enemy.type == ENEMY_HIGH_CANTOR) shot_col = (Color){ 255, 165, 95, 250 };
                 DrawCircleV(enemy.shot_pos, ENEMY_SHOT_RADIUS, shot_col);
+            }
+            if (!enemy.dead && enemy.shot_windup > 0.0f) {
+                Vector2 origin = { enemy.bounds.x + enemy.bounds.width * 0.5f, enemy.bounds.y + enemy.bounds.height * 0.45f };
+                float len = 52.0f + enemy.shot_windup * 60.0f;
+                Vector2 tip = { origin.x + enemy.shot_preview_dir.x * len, origin.y + enemy.shot_preview_dir.y * len };
+                Color tele = (enemy.type == ENEMY_HIGH_CANTOR) ? (Color){ 255, 140, 95, 240 } : (Color){ 145, 220, 255, 235 };
+                DrawLineEx(origin, tip, 4.0f, tele);
+                DrawCircleV(origin, 6.0f, tele);
             }
 
             if (use_player_sprite) {
@@ -1853,6 +1969,8 @@ int main(void)
                      17, (Color){ 200, 198, 210, 255 });
         }
         int ty = 32;
+        DrawText(current_objective_text(), 12, ty, 17, (Color){ 185, 220, 205, 255 });
+        ty += 22;
         if (g_gate_msg_timer > 0.0f && g_gate_msg != NULL) {
             DrawText(g_gate_msg, 12, ty, 17, (Color){ 255, 160, 120, 255 });
             ty += 22;
@@ -1861,6 +1979,8 @@ int main(void)
             DrawText(g_toast, 12, ty, 18, (Color){ 210, 215, 240, 255 });
         if (!enemy.dead)
             DrawText(enemy_name(enemy.type), 12, ty + 22, 16, (Color){ 200, 180, 165, 255 });
+        if (g_room == ROOM_STILLWATER)
+            DrawText("Stillwater reached — Phase 3 critical path complete", 12, ty + 44, 18, (Color){ 175, 220, 205, 255 });
 
         draw_minimap(screen_w);
 

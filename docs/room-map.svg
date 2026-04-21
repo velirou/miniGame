@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="760" viewBox="0 0 1200 760">
+<svg xmlns="http://www.w3.org/2000/svg" width="1380" height="840" viewBox="0 0 1380 840">
   <defs>
     <style>
       .bg { fill: #0c0d12; }
@@ -18,50 +18,82 @@
     </marker>
   </defs>
 
-  <rect class="bg" x="0" y="0" width="1200" height="760" />
+  <rect class="bg" x="0" y="0" width="1380" height="840" />
   <text class="title" x="40" y="55">The Sunken Choir - Current Room Map</text>
-  <text class="meta" x="40" y="88">Each room is 56 x 40 tiles (48 px each) = 2688 x 1920 px</text>
+  <text class="meta" x="40" y="88">Implemented slice on main: 7 rooms, 2 bosses, gated progression + loop-back shortcuts</text>
 
   <!-- Rooms -->
-  <rect class="room" x="90" y="230" width="230" height="130" />
-  <text class="label" x="145" y="285">Entrance</text>
-  <text class="meta" x="125" y="315">Key pickup room</text>
+  <rect class="room" x="80" y="220" width="230" height="130" />
+  <text class="label" x="132" y="275">Entrance</text>
+  <text class="meta" x="110" y="305">Start + Cathedral Key</text>
 
-  <rect class="room hub" x="430" y="230" width="260" height="130" />
-  <text class="label" x="530" y="285">Hub</text>
-  <text class="meta" x="493" y="315">Bench room</text>
+  <rect class="room hub" x="410" y="220" width="260" height="130" />
+  <text class="label" x="512" y="275">Hub</text>
+  <text class="meta" x="470" y="305">Bench + junction</text>
 
-  <rect class="room" x="820" y="230" width="230" height="130" />
-  <text class="label" x="900" y="285">East</text>
-  <text class="meta" x="863" y="315">Dummy + Cling orb</text>
+  <rect class="room" x="790" y="220" width="230" height="130" />
+  <text class="label" x="850" y="275">East arena</text>
+  <text class="meta" x="820" y="305">Cantor + Cling pickup</text>
 
-  <rect class="room" x="430" y="510" width="260" height="130" />
-  <text class="label" x="520" y="565">Shaft</text>
-  <text class="meta" x="495" y="595">Drop room (map)</text>
+  <rect class="room" x="410" y="500" width="260" height="130" />
+  <text class="label" x="500" y="555">Shaft</text>
+  <text class="meta" x="456" y="585">Map pickup + drift gate</text>
+
+  <rect class="room hub" x="790" y="500" width="250" height="130" />
+  <text class="label" x="836" y="555">Antechamber</text>
+  <text class="meta" x="834" y="585">Bench + key gate</text>
+
+  <rect class="room" x="1110" y="500" width="230" height="130" />
+  <text class="label" x="1160" y="555">Bellcrown</text>
+  <text class="meta" x="1135" y="585">High Cantor boss</text>
+
+  <rect class="room" x="1110" y="680" width="230" height="120" />
+  <text class="label" x="1158" y="732">Stillwater</text>
+  <text class="meta" x="1150" y="760">Ending room</text>
 
   <!-- Connections -->
-  <path class="edge" d="M320 295 C360 295, 390 295, 430 295" />
-  <path class="edge" d="M430 330 C390 330, 360 330, 320 330" />
-  <text class="edgeText" x="338" y="275">door</text>
+  <path class="edge" d="M310 285 C350 285, 370 285, 410 285" />
+  <path class="edge" d="M410 320 C370 320, 350 320, 310 320" />
+  <text class="edgeText" x="340" y="266">normal door</text>
 
-  <path class="edgeLocked" d="M690 295 C735 295, 775 295, 820 295" />
-  <path class="edge" d="M820 330 C775 330, 735 330, 690 330" />
-  <text class="edgeText" x="718" y="275">needs Key to enter</text>
+  <path class="edgeLocked" d="M670 285 C710 285, 750 285, 790 285" />
+  <path class="edge" d="M790 320 C750 320, 710 320, 670 320" />
+  <text class="edgeText" x="688" y="263">Hub -> East needs key</text>
 
-  <path class="edge2" d="M560 360 C560 420, 560 455, 560 510" />
-  <text class="edgeText" x="578" y="445">south portal (needs Cling)</text>
+  <path class="edge2" d="M540 350 C540 410, 540 450, 540 500" />
+  <text class="edgeText" x="560" y="438">Hub -> Shaft needs Cling</text>
 
-  <path class="edge2" d="M470 510 C470 450, 470 410, 470 360" />
-  <text class="edgeText" x="250" y="470">bottom exits (left / center / right) -> Hub</text>
+  <path class="edge2" d="M460 500 C460 445, 460 402, 460 350" />
+  <text class="edgeText" x="186" y="468">Shaft bottom left/center exits -> Hub</text>
+
+  <path class="edgeLocked" d="M670 565 C720 565, 740 565, 790 565" />
+  <text class="edgeText" x="662" y="545">Shaft right exit needs Drift</text>
+
+  <path class="edgeLocked" d="M1040 565 C1070 565, 1080 565, 1110 565" />
+  <path class="edge" d="M1110 600 C1080 600, 1070 600, 1040 600" />
+  <text class="edgeText" x="1038" y="545">Antechamber -> Bellcrown needs Key</text>
+
+  <path class="edgeLocked" d="M1225 630 C1225 652, 1225 662, 1225 680" />
+  <path class="edge" d="M1188 680 C1188 662, 1188 652, 1188 630" />
+  <text class="edgeText" x="1002" y="668">Bellcrown -> Stillwater needs High Cantor defeat</text>
+
+  <path class="edge2" d="M790 530 C650 130, 360 120, 250 220" />
+  <text class="edgeText" x="500" y="145">Antechamber return-lift -> Entrance</text>
+
+  <path class="edgeLocked" d="M1110 520 C880 90, 420 90, 290 220" />
+  <text class="edgeText" x="760" y="110">Bellcrown post-boss lift -> Entrance</text>
+
+  <path class="edge" d="M1110 740 C820 830, 430 820, 290 350" />
+  <text class="edgeText" x="700" y="824">Stillwater wraparound -> Entrance</text>
 
   <!-- Legend -->
-  <rect class="legend" x="830" y="500" width="320" height="180" />
-  <text class="label" x="860" y="535">Legend</text>
-  <line x1="860" y1="560" x2="925" y2="560" class="edge" />
-  <text class="meta" x="940" y="566">normal connection</text>
-  <line x1="860" y1="590" x2="925" y2="590" class="edgeLocked" />
-  <text class="meta" x="940" y="596">gated / progression</text>
-  <line x1="860" y1="620" x2="925" y2="620" class="edge2" />
-  <text class="meta" x="940" y="626">vertical route</text>
-  <text class="meta" x="860" y="657">Current room count: 4</text>
+  <rect class="legend" x="80" y="680" width="460" height="130" />
+  <text class="label" x="108" y="715">Legend</text>
+  <line x1="108" y1="736" x2="175" y2="736" class="edge" />
+  <text class="meta" x="190" y="742">normal connection</text>
+  <line x1="108" y1="764" x2="175" y2="764" class="edgeLocked" />
+  <text class="meta" x="190" y="770">gated progression</text>
+  <line x1="108" y1="792" x2="175" y2="792" class="edge2" />
+  <text class="meta" x="190" y="798">vertical route</text>
+  <text class="meta" x="352" y="798">Current room count: 7</text>
 </svg>

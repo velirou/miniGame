@@ -12,14 +12,14 @@ Small **Steam**-oriented **Metroidvania RPG** (Hollow Knight–inspired feel; ti
 
 Prototype code lives at the repo root: `platformer.c` (**Phase 1**: movement, tile collision, coyote/jump buffer, sprint, attack, dummy enemy, camera bounds, F1 hitboxes). Build needs a **raylib** development install (see `docs/TECH_STACK_AND_CONVENTIONS.md`).
 
-**Art (PNG):** place files in **`assets/`** or next to `platformer.exe`. Load order is fixed in `platformer.c` (`ASSET_*` macros). Summary:
+**Art (PNG):** place files in **`assets/`** or next to `platformer.exe`. Load order is centralized in `src/assets_loader.c` (`load_first_*` lists). Summary:
 
 | Role | Try first | Fallbacks |
 |------|-----------|-----------|
-| Hero | `assets/sprite-hero.png` or `sprite-hero.png` | `medieval-rpg-main-character-d002.png`, `player_spritesheet.png` |
+| Hero | `assets/hero-idle-strip.png` or `hero-idle-strip.png` | `sprite-hero.png`, `medieval-rpg-main-character-d002.png`, `player_spritesheet.png` |
 | Background | `sprite-background.png` | `background.png`, `sprite-castle.png` |
-| Ground tile | `tile-ground.png` | `tile.png` |
-| Dummy enemy | `sprite-simple-enemy.png` | — |
+| Ground tile | `tile-stone-ground.png` | `tile-ground.png`, `tile.png` |
+| Dummy enemy | `enemy-echo-basic.png` | `sprite-simple-enemy.png` |
 
 Future art (not loaded in Phase 1 yet): `sprite-miniboss.png`, `sprite-final-boss.png`, `sprite-strong-enemy.png`, `sprite-gate.png`, `sprite-quest-map.png`, `sprite-quest-map-key.png`, `sprite-slash.png`.
 

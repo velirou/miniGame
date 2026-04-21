@@ -1,142 +1,93 @@
-# World graph — The Sunken Choir (v1)
+# World graph — The Sunken Choir (current implementation)
 
 ## Summary
+
+This file now documents what is currently playable on `main` (desktop build), not the full 18-room end target.
 
 | Field | Value |
 |-------|--------|
 | **Working title** | The Sunken Choir |
-| **Room count** | **18** (R01–R18) |
-| **Critical path (unique rooms visited)** | ~14–16 depending on routing |
-| **Optional branch** | Yes — **hidden wing inside R14**; reward: **health shard** (one) + shortcut to R11 |
-| **Benches** | R04, R11, R17 antechamber (see notes) |
+| **Implemented room count** | **7** |
+| **Critical path** | Entrance -> Hub -> East -> Hub -> Shaft -> Antechamber -> Bellcrown -> Stillwater |
+| **Current bosses** | Cantor (mini), High Cantor (final) |
+| **Benches** | Hub, Antechamber |
+| **Map reveal** | Pickup in Shaft (opens minimap toggle) |
 
 ---
 
-## Abilities and gates (cross-reference)
+## Gates and progression (implemented)
 
-| Gate | Unlocks |
-|------|---------|
-| **Veil Drift** | R07 spike run; R10→R12 narrow; shortcut R08→R05 (one-way) |
-| **Chord Cling** | R05 vertical; R12→R13 drop climb back; reach R15 |
-| **Cathedral Key** | R16→R17 gate |
-| **Cantor defeated** | Awards **Veil Drift** (required to proceed along main line) |
-| **High Cantor defeated** | Ending / credits |
-
----
-
-## Room list (purpose of each room)
-
-| ID | Name | Role |
-|----|------|------|
-| R01 | Floodstairs | Start; tone-setting; basic movement |
-| R02 | Reliquary Gap | First hazard read (no damage floor / water) |
-| R03 | Drowned Pew | Combat teach — archetype A |
-| R04 | Mercy Bench | **Bench 1**; hub branch |
-| R05 | Canticle Shaft | **Chord Cling** gate (vertical); shortcut down after cling |
-| R06 | Broken Rose Window | Routing; archetype B intro |
-| R07 | Gargoyle Walk | **Veil Drift** gate (spikes) — backtrack after R09 |
-| R08 | Antechapel | Connects to mini-boss; environmental story |
-| R09 | Cantor’s Loft | **Mini-boss Cantor** → **Veil Drift** |
-| R10 | Echo Nave | Arena spacing; archetype C |
-| R11 | Crossing | **Bench 2**; map-feel hub |
-| R12 | Organ Pit | Timing challenge pre-cling; post-drift revisit |
-| R13 | Bellows Crypt | **Chord Cling** pickup |
-| R14 | Sunken Sacristy | Lore; **optional secret wing** (shard + shortcut to R11) inside same screen |
-| R15 | Confessional Maze | **Cathedral Key** (requires Chord Cling to reach) |
-| R16 | High Altar Gate | Key check → boss approach |
-| R17 | Bellcrown | **Final boss High Cantor** (2 phases max) |
-| R18 | Stillwater | Ending space — short walkout / stinger |
-
-*Note:* Optional content lives in a **secret sub-area** of R14 (same map node for the 18-room count).
+| Gate | Requirement | In-game result |
+|------|-------------|----------------|
+| Hub -> East | Cathedral Key (`GATE_EAST_ARENA`) | Access to Cantor + Chord Cling pickup room |
+| Hub -> Shaft | Chord Cling (`GATE_CLING`) | Unlocks vertical route south |
+| Shaft -> Antechamber (right-bottom exit) | Veil Drift (`GATE_DRIFT`) | Opens late-game branch |
+| Antechamber -> Bellcrown | Cathedral Key (`GATE_KEY`) | Final boss approach |
+| Antechamber (high return-lift) -> Entrance | None (`GATE_NONE`) | Late-game shortcut back to start |
+| Bellcrown (high-left lift) -> Entrance | High Cantor defeated (`GATE_FINAL_CLEAR`) | Post-boss shortcut back to start |
+| Bellcrown -> Stillwater | High Cantor defeated (`GATE_FINAL_CLEAR`) | Ending walkout room |
+| Stillwater -> Entrance | None (`GATE_NONE`) | Wraps map back to start |
 
 ---
 
-## Graph (connections)
+## Room list (implemented)
 
-Legend: `↔` both ways, `→` one-way, `[gate]` requirement.
+| ID | Runtime enum | Name | Purpose |
+|----|--------------|------|---------|
+| R01 | `ROOM_ENTRANCE` | Entrance | Start room, Cathedral Key pickup, early enemy |
+| R02 | `ROOM_HUB` | Hub | Main connector, first bench, links to Entrance/East/Shaft |
+| R03 | `ROOM_EAST` | East arena | Cantor mini-boss + Chord Cling pickup |
+| R04 | `ROOM_SHAFT` | Shaft | Vertical room, map pickup, drift-gated right exit |
+| R05 | `ROOM_ANTECHAMBER` | Antechamber | Late-game lobby, second bench, gate to Bellcrown |
+| R06 | `ROOM_BELLCROWN` | Bellcrown | Final boss room (High Cantor) |
+| R07 | `ROOM_STILLWATER` | Stillwater | Post-boss ending/walkout space |
+
+---
+
+## Graph (implemented)
+
+Legend: `↔` both ways, `[gate]` requirement.
 
 ```
-                    [R18 Stillwater]
-                           ↑
-                    [R17 Bellcrown]  (final boss)
-                           ↑
-              [gate: Cathedral Key]
-                           ↑
-                    [R16 High Altar Gate]
-                           ↑
-                    [R15 Confessional Maze]  [needs Chord Cling to enter from R14]
-                           ↑
-         ┌─────────────────┴─────────────────┐
-         ↑                                   ↑
-   [R14 Sunken Sacristy]              (optional secret in R14 → shard + shortcut → R11)
-         ↑
-   [R13 Bellows Crypt]  ← Chord Cling pickup
-         ↑
-   [R12 Organ Pit]  [partial gate: Veil Drift for clean traversal]
-         ↑
-   [R11 Crossing]  **Bench 2**
-         ↑
-   [R10 Echo Nave]
-         ↑
-   [R07 Gargoyle Walk]  [gate: Veil Drift]
-         ↑
-   [R06 Broken Rose Window]
-         ↑
-   ┌────┴────┐
-   ↑         ↑
-[R08]     [R05 Canticle Shaft]  [gate: Chord Cling for full vertical]
-   ↑         ↑ (shortcut down after cling)
-[R09]       │
-Cantor      │
-(mini)      │
-   ↑         │
-   └────┬────┘
-        ↑
-   [R04 Mercy Bench]  **Bench 1**
-        ↑
-   [R03 Drowned Pew]
-        ↑
-   [R02 Reliquary Gap]
-        ↑
-   [R01 Floodstairs]  START
+[Entrance] ↔ [Hub] ↔ [East arena]
+                |        ^ (Cantor mini-boss)
+                |        |
+                └─[Chord Cling required]─┘
+
+[Hub] ↔ [Shaft]
+          |  \
+          |   └─[Veil Drift required]→ [Antechamber] ↔ [Bellcrown] → [Stillwater]
+          |                                |  \          |
+          |                                |   └────→ [Entrance]
+          |                                |      (post-boss lift from Bellcrown)
+          |                                |             └─[High Cantor defeated]
+          |                                └─[Cathedral Key required]
+          |                                └─(high return-lift) → [Entrance]
+          |
+          └────────────────────────────────────────────────────────→ [Entrance]
+                             (Stillwater wraparound door)
+          └─(map pickup in Shaft)
 ```
 
-**Early critical path (first bench to mini-boss):** R01→R02→R03→R04→R06→R08→R09 (get Veil Drift).
+---
 
-**Then:** R07 open → R10→R11→R12→R13 (Chord Cling) → R14→R15 (key) → R16→R17→R18.
+## Enemy placement (implemented)
+
+| Room | Enemy focus |
+|------|-------------|
+| Entrance | Dasher |
+| Hub | Tank |
+| East arena | Cantor (mini-boss) |
+| Shaft | Caster |
+| Antechamber | Caster |
+| Bellcrown | High Cantor (final boss) |
 
 ---
 
-## Bench placements
+## Notes
 
-| Bench ID | Room | Notes |
-|----------|------|--------|
-| B1 | R04 Mercy Bench | After first combat set piece |
-| B2 | R11 Crossing | Mid-map; optional branch loops back here |
-| B3 | R16 (antechamber) *or* small room R16a | If scope tight: heal statue before R17 only — prefer **real bench** in R16 lobby |
-
-**Decision:** Use **two full benches + bench before boss** — either R16 lobby as B3 or merge B3 into R11 pacing (harder). **Locked for v1:** **three** bench sites — R04, R11, **R16 antechamber** (treat as part of R16 graph node).
-
----
-
-## Secret / optional
-
-| Location | Secret | Reward |
-|----------|--------|--------|
-| R14 (secret wing) | Break wall or underwater passage | **Health shard** + shortcut to R11 |
-| R08 | Inspectable lore | Flavor only |
-
----
-
-## Enemy placement (design intent only)
-
-| Archetype | Example rooms |
-|-----------|-----------------|
-| A — slow / heavy | R03, R06 |
-| B — fast / flanking | R06, R08, R10 |
-| C — ranged / area denial | R10, R12, R15 |
-
-Bosses: R09 Cantor (mini), R17 High Cantor (final).
+- The long-term vision remains an 18-room world (`docs/GAME_VISION_AND_SCOPE.md`), but this graph tracks the current playable slice.
+- As rooms are added, keep enum names and graph IDs aligned with `platformer.c`.
 
 ---
 
@@ -144,4 +95,5 @@ Bosses: R09 Cantor (mini), R17 High Cantor (final).
 
 | Date | Change |
 |------|--------|
-| Phase 0 | Initial 18-room graph, abilities, keys, benches |
+| Phase 0 | Initial 18-room concept graph locked |
+| Phase 2+3 slice | Replaced doc with current 7-room implemented graph on `main` |

@@ -47,3 +47,6 @@ build.log
 # OS files
 .DS_Store
 Thumbs.db
+
+# Local archive notes (do not track)
+PROJECT_ARCHIVE_NOTES.txt

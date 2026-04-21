@@ -25,7 +25,7 @@ For copy-paste LLM prompts, see `docs/MASTER_PROMPTS.md`.
 | Order of work | `docs/MILESTONES.md` |
 | Prompts for agents | `docs/MASTER_PROMPTS.md` |
 | Tech / build / conventions | `docs/TECH_STACK_AND_CONVENTIONS.md` |
-| PNG filenames & load order | `platformer.c` (`ASSET_*`), optional folder `assets/` |
+| PNG filenames & load order | `src/assets_loader.c` (`load_first_*` lists), optional folder `assets/` |
 
 ## Phase 0 (locked)
 

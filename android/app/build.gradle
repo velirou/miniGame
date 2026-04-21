@@ -42,14 +42,19 @@ android {
 }
 
 tasks.register("syncGameAssets", Sync) {
-    from("../..") {
+    from("../../assets") {
         include "sprite-hero.png"
         include "medieval-rpg-main-character-d002.png"
         include "player_spritesheet.png"
-        include "tile-ground.png"
-        include "tile.png"
-        include "sprite-simple-enemy.png"
+        include "hero-idle-strip.png"
+        include "hero-attack-strip.png"
         include "sprite-hero-attack.png"
+        include "tile-ground.png"
+        include "tile-stone-ground.png"
+        include "tile.png"
+        include "enemy-echo-basic.png"
+        include "sprite-simple-enemy.png"
+        include "ui-choir-map.png"
         include "sprite-quest-map.png"
     }
     into("src/main/assets")

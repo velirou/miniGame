@@ -27,7 +27,7 @@ miniGame/
   build/                # local only; gitignored
 ```
 
-Until `src/` exists, root-level `platformer.c` is acceptable for the prototype.
+Current layout keeps `platformer.c` at root as the gameplay entrypoint, with shared helpers in `src/` and headers in `include/`.
 
 ---
 
@@ -79,10 +79,10 @@ A gameplay task is **done** when:
 **Phase 1 — Windows (MinGW-w64, raylib installed):** from repo root, with `raylib` and MinGW on `PATH`:
 
 ```text
-gcc -o platformer.exe platformer.c -lraylib -lopengl32 -lgdi32 -lwinmm -static-libgcc
+gcc -o platformer.exe platformer.c src/assets_loader.c -lraylib -lopengl32 -lgdi32 -lwinmm -static-libgcc
 ```
 
-Run `platformer.exe` with working directory set to the project folder (or wherever the exe lives). PNGs may live in **`assets/`** or the same folder as the executable — see `ASSET_*` names in `platformer.c` (hero: `sprite-hero.png` first, then legacy names; tiles: `tile-ground.png` / `tile.png`; BG: `sprite-background.png` / `background.png` / `sprite-castle.png`; dummy: `sprite-simple-enemy.png`). Placeholders are used when files are missing.
+Run `platformer.exe` with working directory set to the project folder (or wherever the exe lives). PNGs may live in **`assets/`** or the same folder as the executable — preferred and fallback names are centralized in `src/assets_loader.c` (`load_first_*` lists). Placeholders are used when files are missing.
 
 **Coyote time / jump buffer:** tuned in `platformer.c` (search `COYOTE_`, `JUMP_BUFFER_`, or the `Player` timers `coyote_timer` / `jump_buffer_timer`).
 
@@ -100,7 +100,7 @@ Run `platformer.exe` with working directory set to the project folder (or wherev
 ## Assets
 
 - Prefer **power-of-two** textures where relevant; document sprite frame counts next to filenames.
-- **Phase 1 filenames** are centralized as `#define ASSET_*` in `platformer.c` — update there when renaming.
+- Asset filename aliases are centralized in `src/assets_loader.c` (`load_first_hero`, `load_first_attack`, `load_first_tile`, `load_first_enemy`, `load_first_map`) — update those lists when renaming.
 - **Hero sheet:** a **64×32** image is treated as **one** pose (not split into two 32×32 frames).
 
 ---

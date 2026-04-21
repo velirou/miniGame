@@ -58,6 +58,10 @@ Complete milestones **in order**. Each phase has **exit criteria**: do not skip 
 
 **Exit:** friends play greybox and **finish** without dev teleport cheats.
 
+**Implementation (code):** `platformer.c` now includes a complete playable greybox slice with transitions, benches, gated progression (key/cling/drift/final-clear), map reveal, shortcuts, and late-game loopbacks (`Entrance`, `Hub`, `East`, `Shaft`, `Antechamber`, `Bellcrown`, `Stillwater`).
+
+**Manual test (Phase 2 closure):** Start at Entrance; collect key; enter Hub; clear East route to unlock Cling/Drift; use Hub->Shaft route; confirm map pickup works (`M`); confirm drift gate to Antechamber; verify loop doors from late rooms return to Entrance; verify no crash/soft-lock on repeated transitions.
+
 ---
 
 ## Phase 3 — Enemies and bosses
@@ -74,6 +78,10 @@ Complete milestones **in order**. Each phase has **exit criteria**: do not skip 
 | 3.6 | Encounter design pass: arenas, spawn fairness | No off-screen hits in main path |
 
 **Exit:** deaths feel like **player mistakes**; no RNG-heavy losses on critical path.
+
+**Implementation (code):** `platformer.c` now includes three common archetypes (tank/dasher/caster), mini-boss Cantor, and final boss High Cantor (2-phase behavior). Telegraph pass added for projectile attacks (windup indicator), plus fairness clamp to reduce off-screen pressure.
+
+**Manual test (Phase 3 closure):** Fight each archetype in its room; confirm aggro and retaliation are readable; beat Cantor and verify Veil Drift unlock; beat High Cantor and verify phase transition + final gate unlock; confirm no unavoidable off-screen hits during critical path rooms.
 
 ---
 
