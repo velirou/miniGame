@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="760" viewBox="0 0 1200 760">
+  <defs>
+    <style>
+      .bg { fill: #0c0d12; }
+      .room { fill: #1f2430; stroke: #8aa0ff; stroke-width: 3; rx: 14; ry: 14; }
+      .hub { fill: #2a2f3d; stroke: #d8c47a; }
+      .title { fill: #eef1ff; font: 700 28px Arial, sans-serif; }
+      .label { fill: #d8defa; font: 600 20px Arial, sans-serif; }
+      .meta { fill: #b8c0e8; font: 500 17px Arial, sans-serif; }
+      .edge { stroke: #86d39d; stroke-width: 4; fill: none; marker-end: url(#arrow); }
+      .edge2 { stroke: #7ec8ff; stroke-width: 4; fill: none; marker-end: url(#arrow); }
+      .edgeLocked { stroke: #f1b96a; stroke-width: 4; fill: none; stroke-dasharray: 10 8; marker-end: url(#arrow); }
+      .edgeText { fill: #dce5ff; font: 600 16px Arial, sans-serif; }
+      .legend { fill: #171b24; stroke: #4f5f8f; stroke-width: 2; rx: 10; ry: 10; }
+    </style>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#cfe0ff" />
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1200" height="760" />
+  <text class="title" x="40" y="55">The Sunken Choir - Current Room Map</text>
+  <text class="meta" x="40" y="88">Each room is 56 x 40 tiles (48 px each) = 2688 x 1920 px</text>
+
+  <!-- Rooms -->
+  <rect class="room" x="90" y="230" width="230" height="130" />
+  <text class="label" x="145" y="285">Entrance</text>
+  <text class="meta" x="125" y="315">Key pickup room</text>
+
+  <rect class="room hub" x="430" y="230" width="260" height="130" />
+  <text class="label" x="530" y="285">Hub</text>
+  <text class="meta" x="493" y="315">Bench room</text>
+
+  <rect class="room" x="820" y="230" width="230" height="130" />
+  <text class="label" x="900" y="285">East</text>
+  <text class="meta" x="863" y="315">Dummy + Cling orb</text>
+
+  <rect class="room" x="430" y="510" width="260" height="130" />
+  <text class="label" x="520" y="565">Shaft</text>
+  <text class="meta" x="495" y="595">Drop room (map)</text>
+
+  <!-- Connections -->
+  <path class="edge" d="M320 295 C360 295, 390 295, 430 295" />
+  <path class="edge" d="M430 330 C390 330, 360 330, 320 330" />
+  <text class="edgeText" x="338" y="275">door</text>
+
+  <path class="edgeLocked" d="M690 295 C735 295, 775 295, 820 295" />
+  <path class="edge" d="M820 330 C775 330, 735 330, 690 330" />
+  <text class="edgeText" x="718" y="275">needs Key to enter</text>
+
+  <path class="edge2" d="M560 360 C560 420, 560 455, 560 510" />
+  <text class="edgeText" x="578" y="445">south portal (needs Cling)</text>
+
+  <path class="edge2" d="M470 510 C470 450, 470 410, 470 360" />
+  <text class="edgeText" x="250" y="470">bottom exits (left / center / right) -> Hub</text>
+
+  <!-- Legend -->
+  <rect class="legend" x="830" y="500" width="320" height="180" />
+  <text class="label" x="860" y="535">Legend</text>
+  <line x1="860" y1="560" x2="925" y2="560" class="edge" />
+  <text class="meta" x="940" y="566">normal connection</text>
+  <line x1="860" y1="590" x2="925" y2="590" class="edgeLocked" />
+  <text class="meta" x="940" y="596">gated / progression</text>
+  <line x1="860" y1="620" x2="925" y2="620" class="edge2" />
+  <text class="meta" x="940" y="626">vertical route</text>
+  <text class="meta" x="860" y="657">Current room count: 4</text>
+</svg>
