@@ -62,6 +62,20 @@
 /* Sprite drawn this many px up so feet line up with collider feet (hitbox inset was sinking art) */
 #define PLAYER_SPRITE_Y_OFF (-HITBOX_PAD)
 
+#define BASE_SCREEN_W        960
+#define BASE_SCREEN_H        540
+#define TOUCH_BTN_SIZE       88.0f
+#define TOUCH_BTN_GAP        18.0f
+#define TOUCH_BTN_ALPHA      100
+#define TOUCH_BTN_TEXT_ALPHA 220
+#define MOBILE_CAM_ZOOM       1.45f
+
+#if defined(PLATFORM_ANDROID) || defined(PLATFORM_IOS)
+#define MOBILE_BUILD 1
+#else
+#define MOBILE_BUILD 0
+#endif
+
 /* --- Canonical asset filenames (PNG). Order = load priority within category. --- */
 #define ASSET_HERO_A     "sprite-hero.png"
 #define ASSET_HERO_B     "medieval-rpg-main-character-d002.png"
@@ -134,6 +148,8 @@ static bool g_has_cathedral_key = false;
 static bool g_has_chord_cling = false;
 static bool g_has_veil_drift = false;
 static bool g_has_map = false;
+static bool g_map_open = false;
+static bool g_mobile_run_mode = true;
 
 static bool g_dummy_defeated = false;
 static bool g_shortcut_unlocked = false;
@@ -151,6 +167,15 @@ static bool  g_prev_in_door[MAX_DOORS];
 static bool load_texture_asset(Texture2D *out, const char *filename)
 {
     char path[160];
+#if MOBILE_BUILD
+    *out = LoadTexture(filename);
+    if (out->width > 0) return true;
+    int nm = snprintf(path, sizeof path, "assets/%s", filename);
+    if (nm > 0 && nm < (int)sizeof path) {
+        *out = LoadTexture(path);
+        if (out->width > 0) return true;
+    }
+#endif
     int n = snprintf(path, sizeof path, "assets/%s", filename);
     if (n > 0 && n < (int)sizeof path && FileExists(path)) {
         *out = LoadTexture(path);
@@ -206,10 +231,42 @@ typedef struct DummyEnemy {
     bool dead;
 } DummyEnemy;
 
+typedef struct InputState {
+    float move_x;
+    bool run_held;
+    bool jump_pressed;
+    bool jump_released;
+    bool attack_pressed;
+    bool interact_pressed;
+    bool reset_pressed;
+    bool toggle_debug_pressed;
+    bool toggle_map_pressed;
+    bool using_touch;
+} InputState;
+
+typedef struct TouchUi {
+    Rectangle left_btn;
+    Rectangle right_btn;
+    Rectangle run_btn;
+    Rectangle jump_btn;
+    Rectangle attack_btn;
+    Rectangle interact_btn;
+    Rectangle map_btn;
+    bool left_down_prev;
+    bool right_down_prev;
+    bool run_down_prev;
+    bool jump_down_prev;
+    bool attack_down_prev;
+    bool interact_down_prev;
+    bool map_down_prev;
+} TouchUi;
+
 static Rectangle east_enemy_spawn(void);
 static void sync_dummy_for_room(DummyEnemy *e);
 static Rectangle player_collider(Vector2 pos);
 static void push_toast(const char *msg, float sec);
+static void gather_input(InputState *in, TouchUi *touch_ui, int screen_w, int screen_h);
+static void draw_touch_controls(const TouchUi *touch_ui);
 
 static int level_map[MAP_HEIGHT][MAP_WIDTH];
 
@@ -699,23 +756,146 @@ static void resolve_axis_y(Rectangle *body, float prev_y, float *vel_y, bool *on
     }
 }
 
-static bool shift_held(void)
+static bool point_in_rect(Vector2 p, Rectangle r)
 {
-    return IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
+    return p.x >= r.x && p.x <= (r.x + r.width) && p.y >= r.y && p.y <= (r.y + r.height);
 }
 
-static void physics_player(Player *p, float dt)
+static bool touch_down_in(Rectangle r)
+{
+    int tc = GetTouchPointCount();
+    for (int i = 0; i < tc; i++) {
+        Vector2 tp = GetTouchPosition(i);
+        if (point_in_rect(tp, r)) return true;
+    }
+    return false;
+}
+
+static void layout_touch_controls(TouchUi *touch_ui, int screen_w, int screen_h)
+{
+    float short_side = (float)((screen_w < screen_h) ? screen_w : screen_h);
+    float scale = short_side / 540.0f;
+    if (scale < 0.85f) scale = 0.85f;
+    if (scale > 1.25f) scale = 1.25f;
+
+    float btn = TOUCH_BTN_SIZE * scale;
+    float gap = TOUCH_BTN_GAP * scale;
+    float pad = 20.0f * scale;
+    bool landscape = (screen_w >= screen_h);
+
+    if (landscape) {
+        float y0 = (float)screen_h - pad - btn;
+        touch_ui->left_btn = (Rectangle){ pad, y0, btn, btn };
+        touch_ui->right_btn = (Rectangle){ pad + btn + gap, y0, btn, btn };
+        touch_ui->run_btn = (Rectangle){ pad + 0.5f * (btn + gap), y0 - btn - gap, btn, btn };
+
+        touch_ui->jump_btn = (Rectangle){ (float)screen_w - pad - btn, y0, btn, btn };
+        touch_ui->attack_btn = (Rectangle){ (float)screen_w - pad - (btn * 2.0f) - gap, y0, btn, btn };
+        touch_ui->interact_btn = (Rectangle){ (float)screen_w - pad - (btn * 2.0f) - gap, y0 - btn - gap, btn, btn };
+        touch_ui->map_btn = (Rectangle){ (float)screen_w - pad - btn, y0 - btn - gap, btn, btn };
+    } else {
+        float y0 = (float)screen_h - pad - btn;
+        touch_ui->left_btn = (Rectangle){ pad, y0, btn, btn };
+        touch_ui->right_btn = (Rectangle){ pad + btn + gap, y0, btn, btn };
+        touch_ui->run_btn = (Rectangle){ pad, y0 - btn - gap, btn, btn };
+
+        touch_ui->jump_btn = (Rectangle){ (float)screen_w - pad - btn, y0 - btn - gap, btn, btn };
+        touch_ui->attack_btn = (Rectangle){ (float)screen_w - pad - (btn * 2.0f) - gap, y0 - btn - gap, btn, btn };
+        touch_ui->interact_btn = (Rectangle){ (float)screen_w - pad - (btn * 2.0f) - gap, y0, btn, btn };
+        touch_ui->map_btn = (Rectangle){ (float)screen_w - pad - btn, y0, btn, btn };
+    }
+}
+
+static void gather_input(InputState *in, TouchUi *touch_ui, int screen_w, int screen_h)
+{
+    memset(in, 0, sizeof *in);
+
+    if (IsKeyDown(KEY_A) || IsKeyDown(KEY_LEFT)) in->move_x -= 1.0f;
+    if (IsKeyDown(KEY_D) || IsKeyDown(KEY_RIGHT)) in->move_x += 1.0f;
+    in->run_held = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
+    in->jump_pressed = IsKeyPressed(KEY_SPACE) || IsKeyPressed(KEY_W) || IsKeyPressed(KEY_UP);
+    in->jump_released = IsKeyReleased(KEY_SPACE) || IsKeyReleased(KEY_W) || IsKeyReleased(KEY_UP);
+    in->attack_pressed = IsKeyPressed(KEY_J) || IsKeyPressed(KEY_K);
+    in->interact_pressed = IsKeyPressed(KEY_E);
+    in->reset_pressed = IsKeyPressed(KEY_R);
+    in->toggle_debug_pressed = IsKeyPressed(KEY_F1);
+    in->toggle_map_pressed = IsKeyPressed(KEY_M);
+
+    if (MOBILE_BUILD || GetTouchPointCount() > 0) {
+        bool left_down;
+        bool right_down;
+        bool run_down;
+        bool jump_down;
+        bool attack_down;
+        bool interact_down;
+        bool map_down;
+
+        layout_touch_controls(touch_ui, screen_w, screen_h);
+        left_down = touch_down_in(touch_ui->left_btn);
+        right_down = touch_down_in(touch_ui->right_btn);
+        run_down = touch_down_in(touch_ui->run_btn);
+        jump_down = touch_down_in(touch_ui->jump_btn);
+        attack_down = touch_down_in(touch_ui->attack_btn);
+        interact_down = touch_down_in(touch_ui->interact_btn);
+        map_down = touch_down_in(touch_ui->map_btn);
+
+        if (left_down) in->move_x -= 1.0f;
+        if (right_down) in->move_x += 1.0f;
+        if (run_down && !touch_ui->run_down_prev) g_mobile_run_mode = !g_mobile_run_mode;
+        in->jump_pressed = in->jump_pressed || (jump_down && !touch_ui->jump_down_prev);
+        in->jump_released = in->jump_released || (!jump_down && touch_ui->jump_down_prev);
+        in->attack_pressed = in->attack_pressed || (attack_down && !touch_ui->attack_down_prev);
+        in->interact_pressed = in->interact_pressed || (interact_down && !touch_ui->interact_down_prev);
+        in->toggle_map_pressed = in->toggle_map_pressed || (map_down && !touch_ui->map_down_prev);
+        in->using_touch = left_down || right_down || run_down || jump_down || attack_down || interact_down || map_down;
+
+        touch_ui->left_down_prev = left_down;
+        touch_ui->right_down_prev = right_down;
+        touch_ui->run_down_prev = run_down;
+        touch_ui->jump_down_prev = jump_down;
+        touch_ui->attack_down_prev = attack_down;
+        touch_ui->interact_down_prev = interact_down;
+        touch_ui->map_down_prev = map_down;
+    }
+
+    if (in->move_x > 1.0f) in->move_x = 1.0f;
+    if (in->move_x < -1.0f) in->move_x = -1.0f;
+
+    /* Mobile: auto-run while moving so move+attack is 2-finger friendly. */
+    if (MOBILE_BUILD && fabsf(in->move_x) > 0.1f) in->run_held = g_mobile_run_mode;
+}
+
+static void draw_touch_button(Rectangle btn, const char *label, bool down)
+{
+    Color fill = down ? (Color){ 180, 190, 230, TOUCH_BTN_ALPHA + 30 } : (Color){ 75, 78, 105, TOUCH_BTN_ALPHA };
+    DrawRectangleRounded(btn, 0.20f, 8, fill);
+    DrawRectangleRoundedLinesEx(btn, 0.20f, 8, 2.0f, (Color){ 210, 216, 240, 130 });
+    int tw = MeasureText(label, 22);
+    DrawText(label, (int)(btn.x + btn.width * 0.5f - (float)tw * 0.5f), (int)(btn.y + btn.height * 0.5f - 11.0f),
+             22, (Color){ 240, 242, 255, TOUCH_BTN_TEXT_ALPHA });
+}
+
+static void draw_touch_controls(const TouchUi *touch_ui)
+{
+    draw_touch_button(touch_ui->left_btn, "L", touch_ui->left_down_prev);
+    draw_touch_button(touch_ui->right_btn, "R", touch_ui->right_down_prev);
+    draw_touch_button(touch_ui->run_btn, g_mobile_run_mode ? "Run" : "Walk", g_mobile_run_mode);
+    draw_touch_button(touch_ui->jump_btn, "Jump", touch_ui->jump_down_prev);
+    draw_touch_button(touch_ui->attack_btn, "Atk", touch_ui->attack_down_prev);
+    draw_touch_button(touch_ui->interact_btn, "Use", touch_ui->interact_down_prev);
+    draw_touch_button(touch_ui->map_btn, "Map", touch_ui->map_down_prev);
+}
+
+static void physics_player(Player *p, const InputState *in, float dt)
 {
     if (p->iframes_timer > 0.0f) p->iframes_timer -= dt;
     if (p->attack_cd_timer > 0.0f) p->attack_cd_timer -= dt;
 
-    float move_x = 0.0f;
-    if (IsKeyDown(KEY_A)) move_x -= 1.0f;
-    if (IsKeyDown(KEY_D)) move_x += 1.0f;
+    float move_x = in->move_x;
     if (move_x > 0.1f) p->facing = 1;
     else if (move_x < -0.1f) p->facing = -1;
 
-    float move_speed = shift_held() ? RUN_SPEED : MOVE_SPEED;
+    float move_speed = in->run_held ? RUN_SPEED : MOVE_SPEED;
 
     if (p->state == PLAYER_ATTACKING) {
         p->state_timer -= dt;
@@ -731,7 +911,7 @@ static void physics_player(Player *p, float dt)
         if (p->on_ground) p->coyote_timer = COYOTE_TIME;
         else if (p->coyote_timer > 0.0f) p->coyote_timer -= dt;
 
-        if (IsKeyPressed(KEY_SPACE)) p->jump_buffer_timer = JUMP_BUFFER_TIME;
+        if (in->jump_pressed) p->jump_buffer_timer = JUMP_BUFFER_TIME;
         if (p->jump_buffer_timer > 0.0f) p->jump_buffer_timer -= dt;
 
         bool can_jump = (p->on_ground || p->coyote_timer > 0.0f);
@@ -742,10 +922,10 @@ static void physics_player(Player *p, float dt)
             p->jump_buffer_timer = 0.0f;
         }
 
-        if (IsKeyReleased(KEY_SPACE) && p->velocity.y < 0.0f)
+        if (in->jump_released && p->velocity.y < 0.0f)
             p->velocity.y *= JUMP_CUT_MULT;
 
-        if (IsKeyPressed(KEY_J) && p->attack_cd_timer <= 0.0f && p->state == PLAYER_NORMAL) {
+        if (in->attack_pressed && p->attack_cd_timer <= 0.0f && p->state == PLAYER_NORMAL) {
             p->state = PLAYER_ATTACKING;
             p->state_timer = ATTACK_DURATION;
             p->attack_cd_timer = ATTACK_DURATION + ATTACK_COOLDOWN;
@@ -866,14 +1046,15 @@ static void try_pickups(Player *p)
         v2dist(c, g_pick_map.pos) < PICKUP_RADIUS) {
         g_pick_map.collected = true;
         g_has_map = true;
-        push_toast("Choir Chart — press M to view", 2.0f);
+        g_map_open = true;
+        push_toast("Choir Chart — M / Map button toggles", 2.0f);
     }
 }
 
-static void try_bench(Player *p)
+static void try_bench(Player *p, const InputState *in)
 {
     if (!g_has_bench_here) return;
-    if (!IsKeyPressed(KEY_E)) return;
+    if (!in->interact_pressed) return;
     Rectangle b = player_collider(p->position);
     if (!CheckCollisionRecs(b, g_bench_zone)) return;
 
@@ -911,6 +1092,7 @@ static void reset_run(Player *p, DummyEnemy *e, float *hitstop)
     g_has_chord_cling = false;
     g_has_veil_drift = false;
     g_has_map = false;
+    g_map_open = false;
     g_dummy_defeated = false;
     g_shortcut_unlocked = false;
     g_pick_key.collected = false;
@@ -1002,7 +1184,7 @@ static void draw_pickups_world(void)
 
 static void draw_minimap(int screen_w)
 {
-    if (!g_has_map) return;
+    if (!g_has_map || !g_map_open) return;
     const int cell = 22;
     const int pad = 14;
     int ox = screen_w - 2 * cell - 28 - pad;
@@ -1022,8 +1204,8 @@ static void draw_minimap(int screen_w)
 
 int main(void)
 {
-    const int screen_w = 960;
-    const int screen_h = 540;
+    const int start_w = BASE_SCREEN_W;
+    const int start_h = BASE_SCREEN_H;
 
     memset(g_room_seen, 0, sizeof g_room_seen);
 #if PLAYTEST_START_IN_SHAFT
@@ -1037,7 +1219,8 @@ int main(void)
 #endif
     build_room(g_room);
 
-    InitWindow(screen_w, screen_h, "The Sunken Choir — Phase 2");
+    if (!MOBILE_BUILD) SetConfigFlags(FLAG_WINDOW_RESIZABLE);
+    InitWindow(start_w, start_h, "The Sunken Choir — Phase 2");
 
     Texture2D player_tex = {0};
     Texture2D tile_tex = {0};
@@ -1046,17 +1229,19 @@ int main(void)
     bool use_tile_sprite = false;
     bool use_enemy_sprite = false;
 
-    use_player_sprite = load_first_hero(&player_tex);
-    if (use_player_sprite)
-        SetTextureFilter(player_tex, TEXTURE_FILTER_POINT);
+    if (!MOBILE_BUILD) {
+        use_player_sprite = load_first_hero(&player_tex);
+        if (use_player_sprite)
+            SetTextureFilter(player_tex, TEXTURE_FILTER_POINT);
 
-    use_tile_sprite = load_first_tile(&tile_tex);
-    if (use_tile_sprite)
-        SetTextureFilter(tile_tex, TEXTURE_FILTER_POINT);
+        use_tile_sprite = load_first_tile(&tile_tex);
+        if (use_tile_sprite)
+            SetTextureFilter(tile_tex, TEXTURE_FILTER_POINT);
 
-    use_enemy_sprite = load_texture_asset(&enemy_tex, ASSET_ENEMY);
-    if (use_enemy_sprite)
-        SetTextureFilter(enemy_tex, TEXTURE_FILTER_POINT);
+        use_enemy_sprite = load_texture_asset(&enemy_tex, ASSET_ENEMY);
+        if (use_enemy_sprite)
+            SetTextureFilter(enemy_tex, TEXTURE_FILTER_POINT);
+    }
 
     int sprite_frame_w = (int)PLAYER_DRAW_W;
     int sprite_frame_h = (int)PLAYER_DRAW_H;
@@ -1076,19 +1261,46 @@ int main(void)
     sync_dummy_for_room(&enemy);
 
     Camera2D cam = {0};
-    cam.offset = (Vector2){ screen_w / 2.0f, screen_h / 2.0f };
-    cam.zoom = 1.0f;
+    cam.offset = (Vector2){ start_w / 2.0f, start_h / 2.0f };
+    cam.zoom = MOBILE_BUILD ? MOBILE_CAM_ZOOM : 1.0f;
 
     float hitstop_timer = 0.0f;
     bool debug_draw = false;
+    TouchUi touch_ui = {0};
+    InputState input = {0};
+    float mobile_boot_hint = 3.0f;
+    bool mobile_deferred_texture_load = MOBILE_BUILD;
+    float mobile_texture_load_timer = 0.0f;
 
     SetTargetFPS(60);
 
     while (!WindowShouldClose()) {
+        int screen_w = GetScreenWidth();
+        int screen_h = GetScreenHeight();
         float raw_dt = GetFrameTime();
-        if (IsKeyPressed(KEY_F1)) debug_draw = !debug_draw;
-        if (IsKeyPressed(KEY_R))
+        if (mobile_deferred_texture_load) {
+            mobile_texture_load_timer += raw_dt;
+            if (mobile_texture_load_timer > 0.40f) {
+                use_player_sprite = load_first_hero(&player_tex);
+                if (use_player_sprite) {
+                    SetTextureFilter(player_tex, TEXTURE_FILTER_POINT);
+                    compute_horizontal_strip(player_tex, &sprite_frame_w, &sprite_frame_h, &sprite_frame_count);
+                }
+                use_tile_sprite = load_first_tile(&tile_tex);
+                if (use_tile_sprite) SetTextureFilter(tile_tex, TEXTURE_FILTER_POINT);
+                use_enemy_sprite = load_texture_asset(&enemy_tex, ASSET_ENEMY);
+                if (use_enemy_sprite) SetTextureFilter(enemy_tex, TEXTURE_FILTER_POINT);
+                mobile_deferred_texture_load = false;
+            }
+        }
+        if (MOBILE_BUILD && mobile_boot_hint > 0.0f) mobile_boot_hint -= raw_dt;
+        gather_input(&input, &touch_ui, screen_w, screen_h);
+
+        if (input.toggle_debug_pressed) debug_draw = !debug_draw;
+        if (input.reset_pressed)
             reset_run(&player, &enemy, &hitstop_timer);
+        if (input.toggle_map_pressed && g_has_map)
+            g_map_open = !g_map_open;
 
         if (hitstop_timer > 0.0f) {
             hitstop_timer -= raw_dt;
@@ -1103,12 +1315,12 @@ int main(void)
         if (hitstop_timer > 0.0f) dt = 0.0f;
         if (!sim) dt = 0.0f;
 
-        if (dt > 0.0f) physics_player(&player, dt);
+        if (dt > 0.0f) physics_player(&player, &input, dt);
         if (dt > 0.0f) try_respawn_fall(&player);
         if (dt > 0.0f) try_hazard_veil(&player);
         if (dt > 0.0f) try_transition(&player);
         if (dt > 0.0f) try_pickups(&player);
-        if (dt > 0.0f) try_bench(&player);
+        if (dt > 0.0f) try_bench(&player, &input);
 
         tick_fade(&player, &enemy, raw_dt);
 
@@ -1117,14 +1329,14 @@ int main(void)
         if (dt > 0.0f && g_room == ROOM_EAST)
             update_enemy(&enemy, &atk, atk_active, &hitstop_timer, player.position, dt);
 
-        float move_in = (IsKeyDown(KEY_D) ? 1.0f : 0.0f) - (IsKeyDown(KEY_A) ? 1.0f : 0.0f);
+        float move_in = input.move_x;
         {
             bool walk_cycle = (player.state == PLAYER_NORMAL) && fabsf(move_in) > 0.1f && player.on_ground;
             bool run_in_air = (player.state == PLAYER_NORMAL) && fabsf(move_in) > 0.1f && !player.on_ground;
             if (walk_cycle || run_in_air) {
                 player.anim_time += dt;
                 float step = walk_cycle ? 0.1f : 0.12f;
-                if (walk_cycle && shift_held()) step = 0.065f;
+                if (walk_cycle && input.run_held) step = 0.065f;
                 int nfr = use_player_sprite ? sprite_frame_count : 2;
                 if (nfr < 1) nfr = 1;
                 if (!use_player_sprite && nfr < 2) nfr = 2;
@@ -1140,6 +1352,7 @@ int main(void)
 
         float world_w = (float)(MAP_WIDTH * TILE_SIZE);
         float world_h = (float)(MAP_HEIGHT * TILE_SIZE);
+        cam.offset = (Vector2){ screen_w / 2.0f, screen_h / 2.0f };
         float half_vw = (screen_w / cam.zoom) * 0.5f;
         float half_vh = (screen_h / cam.zoom) * 0.5f;
         float px = player.position.x + PLAYER_DRAW_W * 0.5f;
@@ -1148,11 +1361,15 @@ int main(void)
         cam.target.y = fmaxf(half_vh, fminf(world_h - half_vh, py));
 
         BeginDrawing();
-        ClearBackground((Color){ 18, 20, 28, 255 });
+        if (MOBILE_BUILD) ClearBackground((Color){ 34, 38, 54, 255 });
+        else ClearBackground((Color){ 18, 20, 28, 255 });
 
         BeginMode2D(cam);
             /* Void behind tiles — flat dark (no parallax / gradient / PNG for now) */
-            DrawRectangle(0, 0, (int)world_w + 800, (int)world_h + 800, (Color){ 10, 10, 14, 255 });
+            if (MOBILE_BUILD)
+                DrawRectangle(0, 0, (int)world_w + 800, (int)world_h + 800, (Color){ 24, 28, 42, 255 });
+            else
+                DrawRectangle(0, 0, (int)world_w + 800, (int)world_h + 800, (Color){ 10, 10, 14, 255 });
 
             for (int y = 0; y < MAP_HEIGHT; y++) {
                 for (int x = 0; x < MAP_WIDTH; x++) {
@@ -1162,7 +1379,8 @@ int main(void)
                     if (use_tile_sprite)
                         draw_tile_texture(tile_tex, px0, py0);
                     else
-                        DrawRectangle(px0, py0, TILE_SIZE, TILE_SIZE, (Color){ 55, 52, 62, 255 });
+                        DrawRectangle(px0, py0, TILE_SIZE, TILE_SIZE,
+                                      MOBILE_BUILD ? (Color){ 92, 98, 120, 255 } : (Color){ 55, 52, 62, 255 });
                 }
             }
 
@@ -1193,7 +1411,8 @@ int main(void)
                     Color ec = (enemy.hurt_flash > 0.0f) ? WHITE : (Color){ 160, 72, 96, 255 };
                     DrawRectangleRec(enemy.bounds, ec);
                 }
-                DrawRectangleLinesEx(enemy.bounds, 2.0f, (Color){ 40, 36, 44, 255 });
+                if (!MOBILE_BUILD)
+                    DrawRectangleLinesEx(enemy.bounds, 2.0f, (Color){ 40, 36, 44, 255 });
             }
 
             if (use_player_sprite) {
@@ -1245,8 +1464,21 @@ int main(void)
             }
         EndMode2D();
 
-        DrawText("A/D  Space  Shift sprint  J attack  E bench  R reset  F1 debug  M chart (if found)", 12, 10,
-                 17, (Color){ 200, 198, 210, 255 });
+        if (MOBILE_BUILD)
+            draw_touch_controls(&touch_ui);
+
+        if (MOBILE_BUILD) {
+            DrawRectangle(8, 8, 600, 36, (Color){ 0, 0, 0, 150 });
+            DrawText("Touch: L/R + Run/Walk toggle + jump atk use map", 16, 14, 22, (Color){ 245, 245, 255, 255 });
+            if (mobile_boot_hint > 0.0f) {
+                DrawRectangle(40, screen_h / 2 - 70, screen_w - 80, 140, (Color){ 245, 245, 255, 225 });
+                DrawText("Sunken Choir Mobile Test Build", 70, screen_h / 2 - 30, 34, (Color){ 20, 24, 35, 255 });
+                DrawText("If you see this, rendering works.", 70, screen_h / 2 + 8, 24, (Color){ 35, 42, 60, 255 });
+            }
+        } else {
+            DrawText("A/D  Space  Shift sprint  J attack  E bench  R reset  F1 debug  M chart", 12, 10,
+                     17, (Color){ 200, 198, 210, 255 });
+        }
         int ty = 32;
         if (g_gate_msg_timer > 0.0f && g_gate_msg != NULL) {
             DrawText(g_gate_msg, 12, ty, 17, (Color){ 255, 160, 120, 255 });

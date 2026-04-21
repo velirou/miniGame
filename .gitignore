@@ -25,6 +25,12 @@ platformer
 /dist/
 /Debug/
 /Release/
+/android/.gradle/
+/android/app/build/
+/android/app/.cxx/
+/android/local.properties
+/tools/
+/external/
 
 # IDE/editor files
 .vscode/
